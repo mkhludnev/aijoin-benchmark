@@ -1,0 +1,53 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+def solrjVersion = '10.0.0'
+
+dependencies {
+    implementation "org.apache.solr:solr-solrj:${solrjVersion}"
+    implementation "org.apache.solr:solr-solrj-jetty:${solrjVersion}"
+    runtimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+}
+
+application {
+    // overridden per-task below; only used by the plain `run` task
+    mainClass = 'com.aijoin.benchmark.Searcher'
+}
+
+def appArgs = (project.findProperty('args') as String)?.split(/\s+/)?.toList() ?: []
+
+tasks.register('setupCollections', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Creates the products/skus collections on a running Solr (pass -Pargs="<solrUrl>")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.benchmark.SetupCollections'
+    args = appArgs
+}
+
+tasks.register('index', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Bulk-indexes products and skus (pass -Pargs="<solrUrl>")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.benchmark.Indexer'
+    args = appArgs
+}
+
+tasks.register('search', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Runs the join-vs-aijoin search benchmark (pass -Pargs="<solrUrl> <join|aijoin> <seconds>")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.benchmark.Searcher'
+    args = appArgs
+    standardOutput = System.out
+}

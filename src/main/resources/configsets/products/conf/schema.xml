@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- version 1.7: docValues default to true where not stated explicitly -->
+<schema name="products" version="1.7">
+  <fieldType name="string" class="solr.StrField"/>
+  <fieldType name="plong" class="solr.LongPointField"/>
+
+  <fieldType name="text_general" class="solr.TextField" positionIncrementGap="100">
+    <analyzer>
+      <tokenizer class="solr.WhitespaceTokenizerFactory"/>
+      <filter class="solr.LowerCaseFilterFactory"/>
+    </analyzer>
+  </fieldType>
+
+  <field name="ID" type="string" indexed="true" stored="true" docValues="true" required="true"/>
+  <field name="title" type="text_general" indexed="true" stored="false"/>
+  <field name="brand" type="text_general" indexed="true" stored="false"/>
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+
+  <uniqueKey>ID</uniqueKey>
+</schema>

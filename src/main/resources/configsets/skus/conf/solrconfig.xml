@@ -1,0 +1,16 @@
+<?xml version="1.0" ?>
+<config>
+  <luceneMatchVersion>LATEST</luceneMatchVersion>
+
+  <dataDir>${solr.data.dir:}</dataDir>
+
+  <updateHandler class="solr.DirectUpdateHandler2">
+    <updateLog/>
+    <autoCommit>
+      <maxTime>60000</maxTime>
+      <openSearcher>false</openSearcher>
+    </autoCommit>
+  </updateHandler>
+
+  <requestHandler name="/select" class="solr.SearchHandler"/>
+</config>

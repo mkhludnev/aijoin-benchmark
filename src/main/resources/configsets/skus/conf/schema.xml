@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- version 1.7: docValues default to true where not stated explicitly -->
+<schema name="skus" version="1.7">
+  <fieldType name="string" class="solr.StrField"/>
+  <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="pint" class="solr.IntPointField"/>
+
+  <fieldType name="text_general" class="solr.TextField" positionIncrementGap="100">
+    <analyzer>
+      <tokenizer class="solr.WhitespaceTokenizerFactory"/>
+      <filter class="solr.LowerCaseFilterFactory"/>
+    </analyzer>
+  </fieldType>
+
+  <field name="ID" type="string" indexed="true" stored="true" docValues="true" required="true"/>
+  <!-- single-valued FK: every sku belongs to exactly one product. AIJoinIndex's doc mapping is
+       M:1 (one to-doc per from-doc), so this field must stay single-valued for {!aijoin} to see
+       every matching sku, not just one per product. -->
+  <field name="PRODUCT_ID_FK" type="string" indexed="true" stored="false" docValues="true"
+         required="true"/>
+
+  <!-- Color and Size are each indexed twice: *_s (string, docValues) for exact keyword filters,
+       *_t (text_general) for free-text search, populated from *_s via copyField below. -->
+  <field name="color_s" type="string" indexed="true" stored="false" docValues="true"/>
+  <field name="color_t" type="text_general" indexed="true" stored="false"/>
+  <field name="size_s" type="string" indexed="true" stored="false" docValues="true"/>
+  <field name="size_t" type="text_general" indexed="true" stored="false"/>
+
+  <field name="inventory_stock" type="pint" indexed="true" stored="false" docValues="true"/>
+
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+
+  <copyField source="color_s" dest="color_t"/>
+  <copyField source="size_s" dest="size_t"/>
+
+  <uniqueKey>ID</uniqueKey>
+</schema>
