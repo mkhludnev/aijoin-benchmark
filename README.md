@@ -68,6 +68,7 @@ ssh -l ... -i ~/.ssh/ssh-key -L 8983:localhost:8983 ...
 
 ### Results
 
+```
  ./gradlew search -Pargs="http://localhost:8983/solr join 500"
 
 > Task :search
@@ -89,4 +90,5 @@ Running {!aijoin} against 'http://localhost:8983/solr' for 500s, one query/secon
 queries run : 501 (errors: 0)
 QTime (ms)  : min=172 max=9471 avg=334.5
 numFound    : min=20792 max=87399 avg=50790.6
+```
 
