@@ -26,6 +26,26 @@ See `Constants.java` for the exact field names, vocabularies (brands/colors/size
 the indexer and searcher both read from it, so they always agree on what data exists without the
 searcher having to query for it first.
 
+## Raising heap
+
+add into `bin\solr.in.sh`
+```
+SOLR_HEAP="2g"
+```
+
+### Enabling segment-parallel search
+
+"Segment parallel search" (Lucene's per-segment concurrent search, i.e. `indexSearcherExecutorThreads`
+in `solr.xml`) is a **node-level** setting read once at Solr startup -- it can't be set remotely
+through this project's client APIs. Start Solr itself with:
+
+```
+bin/solr start -c -a "-Dsolr.searchThreads=4"
+```
+
+(or set `SOLR_OPTS="-Dsolr.searchThreads=4"` in `solr.in.sh`) *before* running `setupCollections`.
+
+
 ## Usage
 
 ```
@@ -46,20 +66,7 @@ through the join) -- exercising a join result intersected with a local filter, n
 alone. `minExactCount` is forced to `Integer.MAX_VALUE` so `numFound` is always exact, and `rows=0`
 since only the count matters here.
 
-### Enabling segment-parallel search
-
-"Segment parallel search" (Lucene's per-segment concurrent search, i.e. `indexSearcherExecutorThreads`
-in `solr.xml`) is a **node-level** setting read once at Solr startup -- it can't be set remotely
-through this project's client APIs. Start Solr itself with:
-
-```
-bin/solr start -c -a "-Dsolr.searchThreads=4"
-```
-
-(or set `SOLR_OPTS="-Dsolr.searchThreads=4"` in `solr.in.sh`) *before* running `setupCollections`.
-
-
-### FYI
+### Bash notes
 
 ssh -l ... -i ~/.ssh/ssh-key -L 8983:localhost:8983 ...
 
