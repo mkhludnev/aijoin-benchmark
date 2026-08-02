@@ -1,0 +1,36 @@
+./gradlew search           -Pargs="http://localhost:8983/solr aijoin 500 1"
+
+> Task :search
+Running {!aijoin} against 'http://localhost:8983/solr': 500 queries, concurrency 1...
+
+==== {!aijoin} results (concurrency 1) ====
+queries run   : 500 (errors: 0)
+wall clock    : 272.6s -> 1.83 queries/s achieved
+QTime (ms)    : min=177 p50=331 p90=473 p95=478 p99=489 max=987 avg=324.0
+client (ms)   : min=289 p50=447 p95=650 max=15104  [QTime + network + any queueing]
+per-query CSV : results-aijoin-c1.csv
+
+
+
+
+
+./gradlew search           -Pargs="http://localhost:8983/solr join 500 1"
+
+> Task :search
+Running {!join score=none} against 'http://localhost:8983/solr': 500 queries, concurrency 1...
+
+==== {!join} results (concurrency 1) ====
+queries run   : 500 (errors: 0)
+wall clock    : 1033.1s -> 0.48 queries/s achieved
+QTime (ms)    : min=1279 p50=1961 p90=2592 p95=2638 p99=2703 max=3186 avg=1936.8
+client (ms)   : min=1385 p50=2079 p95=2774 max=4056  [QTime + network + any queueing]
+per-query CSV : results-join-c1.csv
+
+
+
+./gradlew search -Pargs="compare results-join-c1.csv results-aijoin-c1.csv"
+
+> Task :search
+
+compared 500 queries: 0 numFound mismatches
+RESULT-SET EQUIVALENCE HOLDS: identical numFound on every query.

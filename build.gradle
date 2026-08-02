@@ -45,7 +45,7 @@ tasks.register('index', JavaExec) {
 
 tasks.register('search', JavaExec) {
     group = 'aijoin-benchmark'
-    description = 'Runs the join-vs-aijoin search benchmark (pass -Pargs="<solrUrl> <join|aijoin> <seconds>")'
+    description = 'Runs the join-vs-aijoin search benchmark (pass -Pargs="<solrUrl> <join|aijoin> <queryCount> [concurrency] [warmupCount]", or -Pargs="compare <a.csv> <b.csv>")'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.aijoin.benchmark.Searcher'
     args = appArgs
