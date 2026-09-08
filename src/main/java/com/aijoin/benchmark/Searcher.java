@@ -88,7 +88,7 @@ public class Searcher {
 
     if (args.length < 3 || args.length > 5) {
       System.err.println(
-          "Usage: search <solrBaseUrl> <join|aijoin> <queryCount> [concurrency] [warmupCount]");
+          "Usage: search <solrBaseUrl> <join|aijoin|joinnum|joinglob> <queryCount> [concurrency] [warmupCount]");
       System.err.println("       search compare <resultsA.csv> <resultsB.csv>");
       System.exit(1);
     }
@@ -100,8 +100,10 @@ public class Searcher {
 
     String localParams =
         switch (parser) {
-          case "join" -> "join score=none";
-          case "aijoin" -> "aijoin";
+          case "join" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+          case "aijoin" -> "aijoin"+ " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+          case "joinnum" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK_NUM + " to=" + Constants.PRODUCT_ID_NUM;
+          case "joinglob" -> "globalOrdinalsJoin score=none joinField="+ Constants.PRODUCT_ID_FK+" which= ";
           default -> throw new IllegalArgumentException(
               "parser must be 'join' or 'aijoin': " + parser);
         };
@@ -165,13 +167,7 @@ public class Searcher {
       CloudJettySolrClient client, String localParams, int index, QuerySpec spec) {
     String q =
         "{!"
-            + localParams
-            + " fromIndex="
-            + Constants.SKUS_COLLECTION
-            + " from="
-            + Constants.PRODUCT_ID_FK
-            + " to="
-            + Constants.PRODUCT_ID
+            + localParams.replace("which=","which='"+spec.brandFilter()+"'" )
             + "}"
             + spec.fromFilter();
 
@@ -184,7 +180,8 @@ public class Searcher {
 
     long t0 = System.nanoTime();
     try {
-      QueryResponse rsp = client.query(Constants.PRODUCTS_COLLECTION, params);
+      QueryResponse rsp = client.query(localParams.contains("globalOrdinalsJoin")
+              ? Constants.PRODSKUS_COLLECTION:Constants.PRODUCTS_COLLECTION, params);
       long wallMs = (System.nanoTime() - t0) / 1_000_000L;
       Integer qTime = rsp.getQTime();
       return new Result(

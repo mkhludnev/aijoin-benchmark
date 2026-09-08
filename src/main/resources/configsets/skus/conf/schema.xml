@@ -2,6 +2,7 @@
 <!-- version 1.7: docValues default to true where not stated explicitly -->
 <schema name="skus" version="1.7">
   <fieldType name="string" class="solr.StrField"/>
+<!--  <fieldType name="int" class="solr.IntField"/>-->
   <fieldType name="plong" class="solr.LongPointField"/>
   <fieldType name="pint" class="solr.IntPointField"/>
 
@@ -17,8 +18,10 @@
        M:1 (one to-doc per from-doc), so this field must stay single-valued for {!aijoin} to see
        every matching sku, not just one per product. -->
   <field name="PRODUCT_ID_FK" type="string" indexed="true" stored="false" docValues="true"
-         required="true"/>
+         required="false"/>
 
+  <field name="PRODUCT_ID_FK_NUM" type="pint" indexed="false" stored="false" docValues="true"
+         required="false"/>
   <!-- Color and Size are each indexed twice: *_s (string, docValues) for exact keyword filters,
        *_t (text_general) for free-text search, populated from *_s via copyField below. -->
   <field name="color_s" type="string" indexed="true" stored="false" docValues="true"/>
@@ -32,6 +35,12 @@
 
   <copyField source="color_s" dest="color_t"/>
   <copyField source="size_s" dest="size_t"/>
+
+  <!-- for colo-index  -->
+  <field name="title" type="text_general" indexed="true" stored="false"/>
+  <field name="brand" type="text_general" indexed="true" stored="false"/>
+  <field name="type" type="string" indexed="false" stored="false"/>
+  <field name="ID_NUM" type="pint" indexed="true" stored="false" docValues="false"/>
 
   <uniqueKey>ID</uniqueKey>
 </schema>

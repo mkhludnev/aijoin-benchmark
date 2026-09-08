@@ -8,6 +8,10 @@ import java.util.List;
  * it just knows, from these constants, what values exist to filter on.
  */
 final class Constants {
+    public static final String PRODSKUS_COLLECTION = "products_skus" ;
+  public static final String PRODUCT_ID_NUM = "ID_NUM";
+  public static final String PRODUCT_ID_FK_NUM = "PRODUCT_ID_FK_NUM";
+
   private Constants() {}
 
   static final String PRODUCTS_COLLECTION = "products";
@@ -27,8 +31,8 @@ final class Constants {
   static final String SIZE_TEXT = "size_t";
   static final String INVENTORY_STOCK = "inventory_stock";
 
-  static final int PRODUCT_COUNT = 1_000_000;
-  static final int SKU_COUNT = 10_000_000;
+  static final int PRODUCT_COUNT = 1_000;//_000;
+  static final int SKU_COUNT = 10_000;//_000;
 
   /** Deterministic seed: indexer and searcher both derive their RNGs from this. */
   static final long RANDOM_SEED = 20260712L;

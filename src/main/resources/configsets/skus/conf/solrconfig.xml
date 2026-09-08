@@ -1,5 +1,7 @@
 <?xml version="1.0" ?>
 <config>
+  <schemaFactory class="ClassicIndexSchemaFactory"/>
+
   <luceneMatchVersion>LATEST</luceneMatchVersion>
 
   <dataDir>${solr.data.dir:}</dataDir>
@@ -13,4 +15,5 @@
   </updateHandler>
 
   <requestHandler name="/select" class="solr.SearchHandler"/>
+  <queryParser name="aijoin" class="org.apache.solr.search.join.AuxIndexJoinQParserPlugin"/>
 </config>

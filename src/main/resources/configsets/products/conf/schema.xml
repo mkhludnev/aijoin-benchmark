@@ -3,6 +3,7 @@
 <schema name="products" version="1.7">
   <fieldType name="string" class="solr.StrField"/>
   <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="pint" class="solr.IntPointField"/>
 
   <fieldType name="text_general" class="solr.TextField" positionIncrementGap="100">
     <analyzer>
@@ -12,9 +13,13 @@
   </fieldType>
 
   <field name="ID" type="string" indexed="true" stored="true" docValues="true" required="true"/>
+  <field name="ID_NUM" type="pint" indexed="true" stored="false" docValues="false" required="true"/>
   <field name="title" type="text_general" indexed="true" stored="false"/>
   <field name="brand" type="text_general" indexed="true" stored="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
 
+  <!-- no-brainer compat with colo-index -->
+  <field name="PRODUCT_ID_FK" type="string" indexed="true" stored="false" docValues="true"
+         required="false"/>
   <uniqueKey>ID</uniqueKey>
 </schema>

@@ -1,5 +1,6 @@
 <?xml version="1.0" ?>
 <config>
+  <schemaFactory class="ClassicIndexSchemaFactory"/>
   <luceneMatchVersion>LATEST</luceneMatchVersion>
 
   <dataDir>${solr.data.dir:}</dataDir>
@@ -15,5 +16,5 @@
   <requestHandler name="/select" class="solr.SearchHandler"/>
 
   <!-- "to" side of the benchmark join: skus.PRODUCT_ID_FK -> products.ID -->
-  <queryParser name="aijoin" class="org.apache.solr.search.join.AIJoinQParserPlugin"/>
+  <queryParser name="aijoin" class="org.apache.solr.search.join.AuxIndexJoinQParserPlugin"/>
 </config>
