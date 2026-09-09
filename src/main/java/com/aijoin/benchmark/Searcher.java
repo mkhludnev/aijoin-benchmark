@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -65,6 +67,18 @@ public class Searcher {
   private static final int MIN_BRANDS = 1;
   private static final int MAX_BRANDS = 3;
 
+  /** Builds the {@code {!...}} local-params fragment for a parser name. */
+  static String localParams(String parser) {
+    return switch (parser) {
+      case "join" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+      case "aijoin" -> "aijoin"+ " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+      case "joinnum" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK_NUM + " to=" + Constants.PRODUCT_ID_NUM;
+      case "joinglob" -> "globalOrdinalsJoin score=none joinField=" + Constants.PRODUCT_ID_FK + " which= ";
+      default -> throw new IllegalArgumentException(
+          "parser must be 'join|aijoin|joinnum|joinglob': " + parser);
+    };
+  }
+
   /**
    * Warmup queries are drawn from a different seed than measured ones, so that the measured set
    * stays identical no matter how many warmup queries were requested.
@@ -72,10 +86,10 @@ public class Searcher {
   private static final long WARMUP_SEED_OFFSET = 1L;
 
   /** One generated query, independent of which parser will execute it. */
-  private record QuerySpec(String fromFilter, String brandFilter) {}
+  record QuerySpec(String fromFilter, String brandFilter) {}
 
   /** One executed query. {@code qTimeMs < 0} marks a failure. */
-  private record Result(int index, int qTimeMs, long wallMs, long numFound, String error) {}
+  record Result(int index, int qTimeMs, long wallMs, long numFound, String error) {}
 
   public static void main(String[] args) throws Exception {
     if (args.length > 0 && args[0].equals("compare")) {
@@ -98,15 +112,7 @@ public class Searcher {
     int concurrency = args.length > 3 ? Integer.parseInt(args[3]) : 1;
     int warmupCount = args.length > 4 ? Integer.parseInt(args[4]) : 0;
 
-    String localParams =
-        switch (parser) {
-          case "join" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
-          case "aijoin" -> "aijoin"+ " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
-          case "joinnum" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK_NUM + " to=" + Constants.PRODUCT_ID_NUM;
-          case "joinglob" -> "globalOrdinalsJoin score=none joinField="+ Constants.PRODUCT_ID_FK+" which= ";
-          default -> throw new IllegalArgumentException(
-              "parser must be 'join' or 'aijoin': " + parser);
-        };
+    String localParams = localParams(parser);
     if (queryCount < 1 || concurrency < 1 || warmupCount < 0) {
       throw new IllegalArgumentException("queryCount and concurrency must be >= 1");
     }
@@ -130,7 +136,7 @@ public class Searcher {
       double elapsedSec = (System.nanoTime() - startNanos) / 1e9;
 
       Path csv = Path.of(String.format("results-%s-c%d.csv", parser, concurrency));
-      writeCsv(csv, results);
+      writeCsv(csv, 1, results, false); // a plain search run is one round
       printSummary(parser, concurrency, results, elapsedSec, csv);
     }
   }
@@ -140,7 +146,7 @@ public class Searcher {
    * returns the results indexed by query ordinal. Workers write to disjoint array slots, and
    * {@code awaitTermination} publishes those writes to this thread.
    */
-  private static Result[] run(
+  static Result[] run(
       CloudJettySolrClient client, String localParams, List<QuerySpec> specs, int concurrency)
       throws InterruptedException {
     Result[] results = new Result[specs.size()];
@@ -163,7 +169,7 @@ public class Searcher {
     return results;
   }
 
-  private static Result runOneQuery(
+  static Result runOneQuery(
       CloudJettySolrClient client, String localParams, int index, QuerySpec spec) {
     String q =
         "{!"
@@ -197,7 +203,7 @@ public class Searcher {
    * Generates the query list deterministically, on one thread. Must not be called from workers:
    * the whole point is that the sequence does not depend on execution timing.
    */
-  private static List<QuerySpec> generateQueries(int count, long seed) {
+  static List<QuerySpec> generateQueries(int count, long seed) {
     Random rnd = new Random(seed);
     List<QuerySpec> specs = new ArrayList<>(count);
     for (int i = 0; i < count; i++) {
@@ -210,7 +216,7 @@ public class Searcher {
   }
 
   /** Picks Color OR Size (never both), then a few distinct values from that one vocabulary. */
-  private static String buildFromFilter(Random rnd) {
+  static String buildFromFilter(Random rnd) {
     boolean useColor = rnd.nextBoolean();
     String field = useColor ? Constants.COLOR_KEYWORD : Constants.SIZE_KEYWORD;
     List<String> vocab = useColor ? Constants.COLORS : Constants.SIZES;
@@ -220,17 +226,17 @@ public class Searcher {
             pickDistinct(rnd, vocab, randomCount(rnd, MIN_VALUES_PER_FILTER, MAX_VALUES_PER_FILTER)));
   }
 
-  private static String buildBrandFilter(Random rnd) {
+  static String buildBrandFilter(Random rnd) {
     return Constants.BRAND
         + ":"
         + orClause(pickDistinct(rnd, Constants.BRANDS, randomCount(rnd, MIN_BRANDS, MAX_BRANDS)));
   }
 
-  private static int randomCount(Random rnd, int min, int max) {
+  static int randomCount(Random rnd, int min, int max) {
     return min + rnd.nextInt(max - min + 1);
   }
 
-  private static List<String> pickDistinct(Random rnd, List<String> vocab, int n) {
+  static List<String> pickDistinct(Random rnd, List<String> vocab, int n) {
     n = Math.min(n, vocab.size());
     LinkedHashSet<String> picked = new LinkedHashSet<>();
     while (picked.size() < n) {
@@ -239,18 +245,42 @@ public class Searcher {
     return new ArrayList<>(picked);
   }
 
-  private static String orClause(List<String> values) {
+  static String orClause(List<String> values) {
     return "(" + values.stream().map(v -> "\"" + v + "\"").collect(Collectors.joining(" OR ")) + ")";
   }
 
-  private static void writeCsv(Path path, Result[] results) throws IOException {
+  /**
+   * The one per-query CSV format in this project, written by both a plain {@code search} run (a
+   * single round) and {@link SearchThanIndex} (many), so {@link #compare} can diff any two result
+   * files. The {@code round} column used to be absent here and present there, which the positional
+   * reader silently mistook for a shifted numFound.
+   */
+  static final String CSV_HEADER = "round,index,qtime_ms,wall_ms,numFound,error";
+
+  /**
+   * Writes one row per query, tagged with {@code round}. Appending keeps whatever rounds the file
+   * already holds and writes the header only for a new file; otherwise the file is replaced.
+   */
+  static void writeCsv(Path path, int round, Result[] results, boolean append) throws IOException {
+    boolean header = !append || !Files.exists(path);
+    OpenOption[] options =
+        append
+            ? new OpenOption[] {StandardOpenOption.CREATE, StandardOpenOption.APPEND}
+            : new OpenOption[] {StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING};
     try (PrintWriter out =
-        new PrintWriter(Files.newBufferedWriter(path, StandardCharsets.UTF_8))) {
-      out.println("index,qtime_ms,wall_ms,numFound,error");
+        new PrintWriter(Files.newBufferedWriter(path, StandardCharsets.UTF_8, options))) {
+      if (header) {
+        out.println(CSV_HEADER);
+      }
       for (Result r : results) {
         out.printf(
-            "%d,%d,%d,%d,%s%n",
-            r.index(), r.qTimeMs(), r.wallMs(), r.numFound(), r.error() == null ? "" : r.error());
+            "%d,%d,%d,%d,%d,%s%n",
+            round,
+            r.index(),
+            r.qTimeMs(),
+            r.wallMs(),
+            r.numFound(),
+            r.error() == null ? "" : r.error());
       }
     }
   }
@@ -346,19 +376,46 @@ public class Searcher {
     return mismatches == 0;
   }
 
+  /**
+   * Reads a per-query CSV by column <em>name</em>, so one reader handles both layouts written in
+   * this project: this class's {@code index,qtime_ms,wall_ms,numFound,error} and {@link
+   * SearchThanIndex}'s, which prepends a {@code round} column.
+   *
+   * <p>It used to read them positionally, which silently shifted by one on the round-prefixed
+   * files: {@link #compare} then diffed {@code wall_ms} believing it was {@code numFound}, so every
+   * query "disagreed" -- by milliseconds -- and the first query of each run looked catastrophic
+   * because that is where the cold-start latency lands.
+   */
   private static List<Result> readCsv(Path path) throws IOException {
     List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
-    List<Result> out = new ArrayList<>(lines.size());
-    for (String line : lines.subList(1, lines.size())) { // skip header
+    if (lines.isEmpty()) {
+      return List.of();
+    }
+    List<String> header = List.of(lines.get(0).split(",", -1));
+    int index = column(header, "index", path);
+    int qTimeMs = column(header, "qtime_ms", path);
+    int wallMs = column(header, "wall_ms", path);
+    int numFound = column(header, "numFound", path);
+    int error = column(header, "error", path);
+    List<Result> out = new ArrayList<>(lines.size() - 1);
+    for (String line : lines.subList(1, lines.size())) {
       String[] f = line.split(",", -1);
       out.add(
           new Result(
-              Integer.parseInt(f[0]),
-              Integer.parseInt(f[1]),
-              Long.parseLong(f[2]),
-              Long.parseLong(f[3]),
-              f[4].isEmpty() ? null : f[4]));
+              Integer.parseInt(f[index]),
+              Integer.parseInt(f[qTimeMs]),
+              Long.parseLong(f[wallMs]),
+              Long.parseLong(f[numFound]),
+              f[error].isEmpty() ? null : f[error]));
     }
     return out;
+  }
+
+  private static int column(List<String> header, String name, Path path) {
+    int at = header.indexOf(name);
+    if (at < 0) {
+      throw new IllegalArgumentException("no '" + name + "' column in " + path + ": " + header);
+    }
+    return at;
   }
 }

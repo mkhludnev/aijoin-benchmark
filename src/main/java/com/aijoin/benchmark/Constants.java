@@ -31,13 +31,13 @@ final class Constants {
   static final String SIZE_TEXT = "size_t";
   static final String INVENTORY_STOCK = "inventory_stock";
 
-  static final int PRODUCT_COUNT = 1_000;//_000;
-  static final int SKU_COUNT = 10_000;//_000;
+  static final int PRODUCT_COUNT = 1_000_000;
+  static final int SKU_COUNT = 10_000_000;
 
   /** Deterministic seed: indexer and searcher both derive their RNGs from this. */
   static final long RANDOM_SEED = 20260712L;
 
-  static final int INDEXER_BATCH_SIZE = 5_000;
+  static final int INDEXER_BATCH_SIZE = 500;
   static final int INDEXER_THREADS = 4;
 
   static final int MAX_INVENTORY_STOCK = 10_000;
