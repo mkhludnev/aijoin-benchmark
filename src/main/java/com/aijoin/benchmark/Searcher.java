@@ -251,7 +251,7 @@ public class Searcher {
 
   /**
    * The one per-query CSV format in this project, written by both a plain {@code search} run (a
-   * single round) and {@link SearchThanIndex} (many), so {@link #compare} can diff any two result
+   * single round) and {@link SearchThenIndex} (many), so {@link #compare} can diff any two result
    * files. The {@code round} column used to be absent here and present there, which the positional
    * reader silently mistook for a shifted numFound.
    */
@@ -379,7 +379,7 @@ public class Searcher {
   /**
    * Reads a per-query CSV by column <em>name</em>, so one reader handles both layouts written in
    * this project: this class's {@code index,qtime_ms,wall_ms,numFound,error} and {@link
-   * SearchThanIndex}'s, which prepends a {@code round} column.
+   * SearchThenIndex}'s, which prepends a {@code round} column.
    *
    * <p>It used to read them positionally, which silently shifted by one on the round-prefixed
    * files: {@link #compare} then diffed {@code wall_ms} believing it was {@code numFound}, so every

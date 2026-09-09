@@ -167,7 +167,7 @@ slightly-mutated index on a fresh searcher. Rows are appended to a cumulative
 `searchindex-results-<parser>-c<concurrency>.csv`, tagged with a `round` column -- the same CSV
 header `search` writes (a plain run is simply round 1), so `compare` diffs either kind of file.
 
-Three details of `SearchThanIndex` are what make rounds comparable at all:
+Three details of `SearchThenIndex` are what make rounds comparable at all:
 
 - **The query set is identical across arms within a round.** The seed is `RANDOM_SEED + round`, so
   every parser in round *r* runs the same queries; the set differs *between* rounds.

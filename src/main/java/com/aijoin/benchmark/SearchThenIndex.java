@@ -2,8 +2,13 @@ package com.aijoin.benchmark;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.apache.solr.client.solrj.jetty.CloudJettySolrClient;
 import org.apache.solr.common.SolrInputDocument;
 
@@ -35,7 +40,7 @@ import org.apache.solr.common.SolrInputDocument;
  *   searchThenIndex &lt;solrBaseUrl&gt; &lt;join,aijoin,joinnum,joinglob,...&gt; &lt;queryCount&gt; [concurrency] [repeat]
  * </pre>
  */
-public class SearchThanIndex {
+public class SearchThenIndex {
 
   private static final int SKUS_PER_ROUND = 10;
 
@@ -70,7 +75,14 @@ public class SearchThanIndex {
         }
 
         System.out.printf("Round %d/%d: updating 1 product and %d skus...%n", round, repeat, SKUS_PER_ROUND);
-        updateData(client, round);
+        if (parsers.contains("aijoin")) {
+          if (!updateDataWithConsistencyProbe(client, round, repeat)) {
+            System.out.println("Aborting: aijoin update-consistency probe failed.");
+            return;
+          }
+        } else {
+          updateData(client, round);
+        }
       }
     }
     System.out.println("Search-then-index complete.");
@@ -88,6 +100,77 @@ public class SearchThanIndex {
    * unique key, so replaying an identical sequence is idempotent and every run walks the index
    * through the same states.
    */
+  /**
+   * Runs the per-round update wrapped in an aijoin consistency probe. Before the update we fire one
+   * aijoin query built from a seed drawn at random from the run's existing round seeds; we re-fire
+   * the same query 1-5 times (random count) while the update runs concurrently; then once more after
+   * it. None of these probe queries are written to CSV.
+   *
+   * <p>The probe asserts that a search concurrent with an update observes only the pre- or
+   * post-update state, never a third intermediate numFound. If more than two distinct numFound
+   * values are seen, or any probe query fails, we log and return false so the caller aborts the run.
+   */
+  private static boolean updateDataWithConsistencyProbe(
+      CloudJettySolrClient client, int round, int repeat) throws Exception {
+    long probeSeed = Constants.RANDOM_SEED + 1 + new Random().nextInt(repeat);
+    Searcher.QuerySpec query = Searcher.generateQueries(1, probeSeed).get(0);
+    String aijoinParams = Searcher.localParams("aijoin");
+
+    Searcher.Result pre = Searcher.runOneQuery(client, aijoinParams, -1, query);
+    if (pre.error() != null) {
+      System.err.println("aijoin probe: pre-update query failed: " + pre.error());
+      return false;
+    }
+
+    Set<Long> numFounds = new LinkedHashSet<>(List.of(pre.numFound()));
+    int intraRuns = 1 + new Random().nextInt(5);
+
+    ExecutorService updatePool = Executors.newSingleThreadExecutor();
+    Future<?> updateFuture =
+        updatePool.submit(
+            () -> {
+              try {
+                updateData(client, round);
+              } catch (Exception e) {
+                throw new RuntimeException(e);
+              }
+            });
+
+    for (int k = 0; k < intraRuns; k++) {
+      Searcher.Result intra = Searcher.runOneQuery(client, aijoinParams, -1, query);
+      if (intra.error() != null) {
+        System.err.println("aijoin probe: intra-update query " + k + " failed: " + intra.error());
+        updateFuture.cancel(true);
+        updatePool.shutdownNow();
+        return false;
+      }
+      numFounds.add(intra.numFound());
+    }
+
+    updateFuture.get();
+    updatePool.shutdown();
+
+    Searcher.Result post = Searcher.runOneQuery(client, aijoinParams, -1, query);
+    if (post.error() != null) {
+      System.err.println("aijoin probe: post-update query failed: " + post.error());
+      return false;
+    }
+    numFounds.add(post.numFound());
+
+    System.out.printf(
+        "Round %d aijoin probe (seed %d, %d intra-update runs): numFound pre=%d intra=%s post=%d, %d distinct%n",
+        round, probeSeed, intraRuns, pre.numFound(), numFounds, post.numFound(), numFounds.size());
+    if (numFounds.size() > 2) {
+      System.err.println(
+          "INCONSISTENT: "
+              + numFounds.size()
+              + " distinct numFound across a concurrent update: "
+              + numFounds);
+      return false;
+    }
+    return true;
+  }
+
   private static void updateData(CloudJettySolrClient client, int round) throws Exception {
     List<String> productTargets =
         List.of(Constants.PRODUCTS_COLLECTION, Constants.PRODSKUS_COLLECTION);
