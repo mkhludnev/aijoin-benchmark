@@ -200,6 +200,21 @@ def main(argv=None):
             picked = [(q[0], q[metric_idx], q[2], q[3]) for q in runs[parser][rd]]
             per_round[parser][rd] = phases(picked, cold, args.tail)
 
+    # A round whose steady window is empty (fewer than cold+tail+1 valid queries,
+    # e.g. after failed queries are excluded) has nothing to median() over; drop
+    # it rather than crash. Every parser must still agree on the surviving rounds.
+    usable = [rd for rd in common if all(per_round[p][rd][1] for p in parsers)]
+    if len(usable) < len(common):
+        dropped = len(common) - len(usable)
+        print(
+            f"WARNING: {dropped} round(s) had an empty steady window "
+            f"(needs > cold+tail={cold + args.tail} valid queries) and were excluded",
+            file=sys.stderr,
+        )
+    common = usable
+    if not common:
+        ap.error("no round has enough valid queries for a steady window; try smaller --cold/--tail")
+
     fit_rounds = [rd for rd in common if rd >= args.from_round]
     steady_med = {p: {rd: median(per_round[p][rd][1]) for rd in common} for p in parsers}
 

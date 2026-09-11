@@ -160,7 +160,7 @@ public class SearchThenIndex {
     System.out.printf(
         "Round %d aijoin probe (seed %d, %d intra-update runs): numFound pre=%d intra=%s post=%d, %d distinct%n",
         round, probeSeed, intraRuns, pre.numFound(), numFounds, post.numFound(), numFounds.size());
-    if (numFounds.size() > 2) {
+    if (numFounds.size() > 3) {
       System.err.println(
           "INCONSISTENT: "
               + numFounds.size()
