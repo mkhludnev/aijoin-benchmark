@@ -37,6 +37,7 @@ import csv
 import re
 import sys
 from collections import Counter
+from urllib.parse import unquote_plus
 from statistics import mean, median
 
 # AUXIJOIN is the current tag; AIJOIN is what older builds emitted
@@ -44,7 +45,14 @@ LINE_RE = re.compile(r"\bA(?:UX)?IJOIN\s+evt=(\w+)(.*)$")
 # a value is either a bracketed list (which may contain spaces) or a single token
 KV_RE = re.compile(r"(\w+)=(\[[^\]]*\]|\S+)")
 SIDECAR_RE = re.compile(r"\bA(?:UX)?IJOIN\s+sidecar( compaction)?:\s*(.*)$")
-REQUEST_RE = re.compile(r"path=/select params=\{.*?\{!(\w+).*\bQTime=(\d+)")
+# the local-params block of q, still URL-encoded; plus the outcome of the request
+LOCALPARAMS_RE = re.compile(r"params=\{.*?\{!([^}]*)\}")
+HITS_RE = re.compile(r"\bhits=(\d+)")
+QTIME_RE = re.compile(r"\bQTime=(\d+)")
+# what the query asked for, independent of which join ran it: the q left over after the local
+# params, plus the fq. Two flavours sharing a signature must return the same hits.
+REST_OF_Q_RE = re.compile(r"params=\{q=\{![^}]*\}([^&]*)")
+FQ_RE = re.compile(r"[&{]fq=([^&}]*)")
 
 PURGE_DECLINED_RE = re.compile(
     r"dead=(\d+) of (\d+) columns.*?reclaims=(\d+) of (\d+) bytes, threshold=(\d+)"
@@ -64,6 +72,41 @@ REAPED_RE = re.compile(r"reaped (\d+) dead pair column\(s\), (\d+) still pending
 
 # events attributed to a to-segment context; everything else is per query or per sidecar
 CONTEXT_EVENTS = {"ctx", "drain", "done"}
+
+
+def join_flavor(parser: str, lp: dict):
+    """A short name for one join flavour, matching Searcher.localParams.
+
+    Several flavours share the {!join} parser and differ only in a local param -- method=topLevelDV,
+    or the numeric field pair -- so the parser name alone collapses them into one row. Anything
+    unrecognised gets a descriptive label rather than being folded into a neighbour.
+    """
+    if parser == "aijoin":
+        return "aijoin"
+    if parser == "globalOrdinalsJoin":
+        return "joinglob"
+    if parser == "join":
+        method = lp.get("method")
+        if method:
+            return "jointop" if method == "topLevelDV" else f"join/{method}"
+        if lp.get("from", "").endswith("_NUM") or lp.get("to", "").endswith("_NUM"):
+            return "joinnum"
+        return "join"
+    return parser
+
+
+def parse_local_params(block: str):
+    """(parser, {local param: value}) from the still-encoded {!...} block of a logged request."""
+    decoded = unquote_plus(block).strip()
+    if not decoded:
+        return None, {}
+    parts = decoded.split()
+    lp = {}
+    for part in parts[1:]:
+        if "=" in part:
+            key, _, value = part.partition("=")
+            lp[key] = value
+    return parts[0], lp
 
 
 def parse_value(raw: str):
@@ -95,7 +138,8 @@ class Log:
         self.stranded = 0
         self.purge_declined = []
         self.contexts = []
-        self.qtimes = {}  # parser -> [ms]
+        self.queries = {}  # flavour -> {'qtimes': [ms], 'hits': [n], 'parser':, 'lp': }
+        self.by_signature = {}  # query signature -> {flavour: hits}
         self.nothing = Counter()  # trigger -> rounds
         self.compactions = []  # dicts
         self.reaped = []  # (reaped, pending)
@@ -111,10 +155,27 @@ def parse_lines(streams) -> Log:
     for stream in streams:
         for line in stream:
             if "QTime=" in line:
-                rm = REQUEST_RE.search(line)
-                if rm:
-                    log.qtimes.setdefault(rm.group(1), []).append(int(rm.group(2)))
-                    continue
+                lm = LOCALPARAMS_RE.search(line)
+                qm = QTIME_RE.search(line)
+                if lm and qm:
+                    parser, lp = parse_local_params(lm.group(1))
+                    if parser:
+                        flavor = join_flavor(parser, lp)
+                        entry = log.queries.setdefault(
+                            flavor, {"qtimes": [], "hits": [], "parser": parser, "lp": lp}
+                        )
+                        entry["qtimes"].append(int(qm.group(1)))
+                        hm = HITS_RE.search(line)
+                        if hm:
+                            entry["hits"].append(int(hm.group(1)))
+                            rest = REST_OF_Q_RE.search(line)
+                            fq = FQ_RE.search(line)
+                            if rest:
+                                sig = unquote_plus(rest.group(1))
+                                if fq:
+                                    sig += " | fq=" + unquote_plus(fq.group(1))
+                                log.by_signature.setdefault(sig, {})[flavor] = int(hm.group(1))
+                        continue
 
             sm = SIDECAR_RE.search(line)
             if sm:
@@ -276,7 +337,7 @@ def section(title):
 def report(log: Log):
     contexts = log.contexts
     n_ctx = len(contexts)
-    if not (n_ctx or log.builds or log.weights or log.qtimes or log.compactions or log.nothing
+    if not (n_ctx or log.builds or log.weights or log.queries or log.compactions or log.nothing
             or log.field_infos or log.fk_loads):
         print("No AUXIJOIN/AIJOIN lines found. Are the diagnostics enabled at TRACE?", file=sys.stderr)
         return 1
@@ -306,12 +367,19 @@ def report(log: Log):
         print(row("sidecar lines not understood", fmt(log.problems["unparsed_sidecar"])))
 
     # ------------------------------------------------------------------ latency
-    if log.qtimes:
-        section("Query latency  (request log QTime, ms)")
-        print(row("parser", "n", "p50", "p90", "p99", "max"))
-        for parser, times in sorted(log.qtimes.items(), key=lambda kv: -len(kv[1])):
-            print(row(f"{{!{parser}}}", fmt(len(times)), fmt(pctile(times, 50)),
-                      fmt(pctile(times, 90)), fmt(pctile(times, 99)), fmt(max(times))))
+    if log.queries:
+        section("Query latency by join flavour  (request log QTime, ms)")
+        print(row("flavour", "n", "p50", "p90", "p99", "max", "hits/query"))
+        for flavor, q in sorted(log.queries.items(), key=lambda kv: -len(kv[1]["qtimes"])):
+            times = q["qtimes"]
+            hits = fmt(int(mean(q["hits"]))) if q["hits"] else "-"
+            print(row(flavor, fmt(len(times)), fmt(pctile(times, 50)), fmt(pctile(times, 90)),
+                      fmt(pctile(times, 99)), fmt(max(times)), hits))
+        print("  what each flavour is:")
+        for flavor, q in sorted(log.queries.items()):
+            detail = " ".join(f"{k}={v}" for k, v in q["lp"].items()
+                              if k in ("score", "method", "from", "to", "joinField", "fromIndex"))
+            print(f"    {flavor:<12} {{!{q['parser']}}} {detail}")
 
     # ------------------------------------------------------------ query demand
     if log.weights:
@@ -426,8 +494,12 @@ def report(log: Log):
 
     # ---------------------------------------------------- document-level pruning
     section("Document-level pruning  (paper: 5.3, 7.3 -- the half-read union)")
-    drained = sum(len(c["drains"]) for c in contexts)
-    never_opened = live - drained
+    # evt=drain is one dumpMatchesInto call, and a column stays live until its from-iterator is
+    # exhausted, so the same column is drained again on later confirmations. Counting calls as
+    # columns overstates the work done and can push "never opened" below zero.
+    drain_calls = sum(len(c["drains"]) for c in contexts)
+    opened = sum(len({d.get("pair") for d in c["drains"]}) for c in contexts)
+    never_opened = live - opened
     early_exits = sum(1 for c in contexts for d in c["drains"] if d.get("confirmed") is True)
     spared = sum(d.get("cellsLeft", 0) for c in contexts for d in c["drains"] if d.get("confirmed") is True)
     walked = sum(d.get("walked", 0) for c in contexts for d in c["drains"])
@@ -440,14 +512,17 @@ def report(log: Log):
         reasons = Counter(c["done"].get("reason", "?") for c in converged)
         for reason, n in reasons.most_common():
             print(row(f"    reason={reason}", fmt(n)))
-    print(row("columns drained", fmt(drained)))
+    print(row("distinct columns opened", fmt(opened), f"{fmt(pct(opened, live))}%"))
+    print(row("  column reads (drain calls) they cost", fmt(drain_calls),
+              f"{fmt(drain_calls / opened, 2) if opened else 'n/a'}x"))
     print(row("columns never opened", fmt(never_opened), f"{fmt(pct(never_opened, live))}%"))
-    print(row("drains ending in an early confirmation", fmt(early_exits), f"{fmt(pct(early_exits, drained))}%"))
+    print(row("drain calls ending in an early confirmation", fmt(early_exits),
+              f"{fmt(pct(early_exits, drain_calls))}%"))
     # cellsLeft summed over confirmed drains counts columns *deferred*, not saved: if the context
     # later converges they get drained anyway. Only "columns never opened" is a real saving.
     print(row("columns deferred by them (may be drained later)", fmt(spared)))
     print(row("from-docs walked (column-read work)", fmt(walked)))
-    print(dist_row("from-docs walked per drain", [d.get("walked", 0) for c in contexts for d in c["drains"]]))
+    print(dist_row("from-docs walked per drain call", [d.get("walked", 0) for c in contexts for d in c["drains"]]))
 
     if converged:
         calls = sum(c["done"].get("confirmCalls", 0) for c in converged)
@@ -502,6 +577,33 @@ def report(log: Log):
     print("=" * WIDTH)
     print("Conclusions")
     print("=" * WIDTH)
+
+    shared = {sig: hits for sig, hits in log.by_signature.items() if len(hits) > 1}
+    if shared:
+        disagreeing = {sig: hits for sig, hits in shared.items() if len(set(hits.values())) > 1}
+        if disagreeing:
+            blamed = Counter()
+            for hits in disagreeing.values():
+                majority = Counter(hits.values()).most_common(1)[0][0]
+                for flavor, n in hits.items():
+                    if n != majority:
+                        blamed[flavor] += 1
+            sig, hits = next(iter(disagreeing.items()))
+            print(
+                f"- {fmt(len(disagreeing))} of {fmt(len(shared))} queries run by more than one flavour came back\n"
+                "  with different hit counts. Either a join is wrong, or the index changed between\n"
+                "  the two runs of that query -- this benchmark indexes while it searches, so a few\n"
+                "  scattered disagreements are expected and a systematic bias by one flavour is not.\n"
+                "  Flavours differing from the majority: "
+                + ", ".join(f"{f} x{n}" for f, n in blamed.most_common()) + "\n"
+                f"  First example: {sig[:90]}\n"
+                + "".join(f"    {f:<12} {fmt(n)}\n" for f, n in sorted(hits.items()))
+            )
+        else:
+            print(
+                f"- All {fmt(len(shared))} queries run by more than one flavour returned identical hit\n"
+                "  counts, so the latency table compares implementations that agree on the answer."
+            )
 
     if log.weights:
         warm_pct = pct(sum(1 for w in log.weights if w.get("pairsMissing", 0) == 0), len(log.weights))
@@ -636,7 +738,7 @@ def write_csv(path, contexts):
     fields = [
         "ctx", "toSeg", "toMaxDoc", "cellsCreated", "cellsDroppedApriori", "cellsLive",
         "approxCard", "approxSpanSum", "colToCountSum", "buildMs",
-        "cellsDrained", "earlyExits", "fromDocsWalked", "converged", "reason",
+        "drainCalls", "columnsOpened", "earlyExits", "fromDocsWalked", "converged", "reason",
         "confirmCalls", "freeHits", "modelsReleased", "rebindsAfterReap",
     ]
     with open(path, "w", newline="", encoding="utf-8") as fh:
@@ -656,7 +758,8 @@ def write_csv(path, contexts):
                     "approxSpanSum": ctx.get("approxSpanSum"),
                     "colToCountSum": ctx.get("colToCountSum"),
                     "buildMs": ctx.get("buildMs"),
-                    "cellsDrained": len(c["drains"]),
+                    "drainCalls": len(c["drains"]),
+                    "columnsOpened": len({d.get("pair") for d in c["drains"]}),
                     "earlyExits": sum(1 for d in c["drains"] if d.get("confirmed") is True),
                     "fromDocsWalked": sum(d.get("walked", 0) for d in c["drains"]),
                     "converged": c["done"] is not None,
