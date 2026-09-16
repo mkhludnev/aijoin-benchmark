@@ -71,6 +71,7 @@ public class Searcher {
   static String localParams(String parser) {
     return switch (parser) {
       case "join" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+      case "jointop" -> "join score=none method=topLevelDV" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
       case "aijoin" -> "aijoin"+ " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
       case "joinnum" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK_NUM + " to=" + Constants.PRODUCT_ID_NUM;
       case "joinglob" -> "globalOrdinalsJoin score=none joinField=" + Constants.PRODUCT_ID_FK + " which= ";
@@ -102,7 +103,7 @@ public class Searcher {
 
     if (args.length < 3 || args.length > 5) {
       System.err.println(
-          "Usage: search <solrBaseUrl> <join|aijoin|joinnum|joinglob> <queryCount> [concurrency] [warmupCount]");
+          "Usage: search <solrBaseUrl> <join|aijoin|joinnum|joinglob|jointop> <queryCount> [concurrency] [warmupCount]");
       System.err.println("       search compare <resultsA.csv> <resultsB.csv>");
       System.exit(1);
     }

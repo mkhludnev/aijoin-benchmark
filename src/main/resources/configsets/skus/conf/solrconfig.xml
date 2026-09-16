@@ -10,7 +10,7 @@
        with the segment's maxDoc: the from-side docset bitset, the from-ord map, and the sidecar
        batch, which writes one document per from-doc whatever the pair matched. Nothing here shrinks
        the ~5M-doc segments this index already has; the cap keeps them from merging into one ~10M-doc
-       segment and doubling all of it. At this index's ~40 bytes/doc, 200MB lands near 5M docs --
+       segment and doubling all of it. At this index's ~40 bytes/doc, 200MB lands near 5M docs
        re-check that ratio if the schema changes, since Tiered has no doc-count knob. -->
   <indexConfig>
     <mergePolicyFactory class="org.apache.solr.index.TieredMergePolicyFactory">
