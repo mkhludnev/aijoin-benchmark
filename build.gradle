@@ -54,7 +54,7 @@ tasks.register('search', JavaExec) {
 
 tasks.register('searchThenIndex', JavaExec) {
     group = 'aijoin-benchmark'
-    description = 'Alternates search rounds with random product/sku updates (pass -Pargs="<solrUrl> <join|aijoin|joinnum|joinglob> <queryCount> [concurrency] [repeat]")'
+    description = 'Alternates search rounds with random product/sku updates (pass options via -Pargs="..."; run without args for usage)'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.aijoin.benchmark.SearchThenIndex'
     args = appArgs

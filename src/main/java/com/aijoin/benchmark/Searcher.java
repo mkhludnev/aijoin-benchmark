@@ -86,8 +86,15 @@ public class Searcher {
    */
   private static final long WARMUP_SEED_OFFSET = 1L;
 
-  /** One generated query, independent of which parser will execute it. */
-  record QuerySpec(String fromFilter, String brandFilter) {}
+  /**
+   * One generated query, independent of which parser will execute it. A null {@code brandFilter}
+   * means no top-level (to-side) filter: every product is a join target.
+   */
+  record QuerySpec(String fromFilter, String brandFilter) {
+    QuerySpec withoutToFilter() {
+      return new QuerySpec(fromFilter, null);
+    }
+  }
 
   /** One executed query. {@code qTimeMs < 0} marks a failure. */
   record Result(int index, int qTimeMs, long wallMs, long numFound, String error) {}
@@ -172,16 +179,20 @@ public class Searcher {
 
   static Result runOneQuery(
       CloudJettySolrClient client, String localParams, int index, QuerySpec spec) {
+    // on the colo-index, which= must still select products only: brand is set on products alone
+    String which = spec.brandFilter() != null ? spec.brandFilter() : Constants.BRAND + ":*";
     String q =
         "{!"
-            + localParams.replace("which=","which='"+spec.brandFilter()+"'" )
+            + localParams.replace("which=","which='"+which+"'" )
             + "}"
             + spec.fromFilter();
 
     ModifiableSolrParams params = new ModifiableSolrParams();
     params.set(CommonParams.Q, q);
     params.set(CommonParams.ROWS, 0);
-    params.set(CommonParams.FQ, spec.brandFilter());
+    if (spec.brandFilter() != null) {
+      params.set(CommonParams.FQ, spec.brandFilter());
+    }
     // force an exact numFound: skip Solr's approximate early-termination count
     params.set(CommonParams.MIN_EXACT_COUNT, Integer.MAX_VALUE);
 

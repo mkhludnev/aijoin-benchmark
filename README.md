@@ -79,7 +79,7 @@ bin/solr start -c -a "-Dsolr.searchThreads=4"
 ./gradlew search           -Pargs="http://localhost:8983/solr join   500 1"
 ./gradlew search           -Pargs="http://localhost:8983/solr aijoin 500 1"
 ./gradlew search           -Pargs="compare results-join-c1.csv results-aijoin-c1.csv"
-./gradlew searchThenIndex  -Pargs="http://localhost:8983/solr join,aijoin,joinnum,joinglob 100 4 55"
+./gradlew searchThenIndex -Pargs="--solr-url=http://localhost:8983/solr --parsers=join,aijoin,joinnum,joinglob --query-count=100 --concurrency=4 --repeat=55"
 ```
 
 `setupCollections` uploads the `products`/`skus` configsets and creates `products`, `skus` and
@@ -158,13 +158,17 @@ index keeps moving under it, which is the case `{!aijoin}` is most exposed to, s
 join index lazily per searcher and a commit throws that work away.
 
 ```
-./gradlew searchThenIndex -Pargs="<solrUrl> <join,aijoin,joinnum,joinglob> <queryCount> [concurrency] [repeat]"
+./gradlew searchThenIndex -Pargs="--solr-url=<solrUrl> --parsers=join,aijoin --query-count=100"
 ```
+
+Run it without `-Pargs` to print the full option list. The options (to-side filter, which side to
+update, concurrent search, soft commit) are described in the `SearchThenIndex` javadoc.
 
 Each **round** runs `queryCount` queries per parser, arms back to back, at `concurrency`, with **no
 warmup**; then updates one product and ten skus and commits, so the next round starts against a
-slightly-mutated index on a fresh searcher. Rows are appended to a cumulative
-`searchindex-results-<parser>-c<concurrency>.csv`, tagged with a `round` column -- the same CSV
+slightly-mutated index on a fresh searcher. Each run gets its own folder,
+`reports/<yyMMdd-HHmm>-<parsers>-<concurrency>-<repeat>/`, holding `args.txt` (the run's arguments)
+and one cumulative `searchindex-results-<parser>-c<concurrency>.csv` per parser, tagged with a `round` column -- the same CSV
 header `search` writes (a plain run is simply round 1), so `compare` diffs either kind of file.
 
 Three details of `SearchThenIndex` are what make rounds comparable at all:
@@ -253,7 +257,7 @@ Run on a cloud VM with 4 vCPUs, 8G RAM, 2G heap, SSD storage, and `-Dsolr.search
 #### Search-then-index: 55 rounds x 100 queries per arm, concurrency 4
 
 ```
-./gradlew searchThenIndex -Pargs="http://localhost:8983/solr join,aijoin,joinnum,joinglob 100 4 55"
+./gradlew searchThenIndex -Pargs="--solr-url=http://localhost:8983/solr --parsers=join,aijoin,joinnum,joinglob --query-count=100 --concurrency=4 --repeat=55"
 tools/searchindex_drift.py --from-round 5
 ```
 
