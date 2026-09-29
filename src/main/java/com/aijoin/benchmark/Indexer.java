@@ -12,11 +12,12 @@ import org.apache.solr.client.solrj.jetty.CloudJettySolrClient;
 import org.apache.solr.common.SolrInputDocument;
 
 /**
- * Bulk-indexes {@link Constants#PRODUCT_COUNT} products and {@link Constants#SKU_COUNT} skus, each
- * sku pointing at exactly one product via {@link Constants#PRODUCT_ID_FK} (single-valued, matching
- * {!aijoin}'s M:1 doc mapping -- see {@link Constants}). IDs and field values are deterministic
- * (seeded from {@link Constants#RANDOM_SEED}), so {@link Searcher} can generate matching filter
- * values without querying the index first.
+ * Bulk-indexes {@link Constants#PRODUCT_COUNT} products and {@link Constants#SKU_COUNT} skus in a
+ * single pass: each product is sent together with the skus that point at it, all through
+ * {@link Constants#PRODUCT_ID_FK} (single-valued, matching {!aijoin}'s M:1 doc mapping -- see
+ * {@link Constants}). IDs and field values are deterministic (seeded from {@link
+ * Constants#RANDOM_SEED}), so {@link Searcher} can generate matching filter values without querying
+ * the index first.
  *
  * <p>Usage: {@code index <solrBaseUrl>}.
  */
@@ -31,63 +32,56 @@ public class Indexer {
 
     try (CloudJettySolrClient client = new CloudJettySolrClient.Builder(List.of(solrUrl)).build()) {
       long start = System.currentTimeMillis();
-      indexProducts(client);
-      indexSkus(client);
+      indexProductsWithSkus(client);
       double elapsedSec = (System.currentTimeMillis() - start) / 1000.0;
       System.out.printf("Indexing complete in %.1fs%n", elapsedSec);
     }
   }
 
-  private static void indexProducts(CloudJettySolrClient client) throws Exception {
-    System.out.printf("Indexing %,d products...%n", Constants.PRODUCT_COUNT);
+  private static void indexProductsWithSkus(CloudJettySolrClient client) throws Exception {
+    System.out.printf(
+        "Indexing %,d products with %,d skus...%n", Constants.PRODUCT_COUNT, Constants.SKU_COUNT);
     runParallel(
-            Constants.PRODUCT_COUNT,
-        List.of(
-            Constants.PRODUCTS_COLLECTION, Constants.PRODSKUS_COLLECTION),
-        client,
-        (rnd, i) -> {
-          SolrInputDocument doc = new SolrInputDocument();
-          String prodId = productId(i);
-          doc.setField(Constants.PRODUCT_ID, prodId);
-          // self-referencing FK, for {!globalOrdinalsJoin} on the colo-index: Lucene's global
-          // ordinals join reads one and the same field on both sides, so a product is only
-          // reachable as a "to" doc when it carries the join value under PRODUCT_ID_FK too
-          doc.setField(Constants.PRODUCT_ID_FK, prodId);
-          doc.setField(Constants.PRODUCT_ID_NUM, i);
-          doc.setField(Constants.TITLE, randomTitle(rnd));
-          doc.setField(
-              Constants.BRAND, Constants.BRANDS.get(rnd.nextInt(Constants.BRANDS.size())));
-          return doc;
-        });
-    client.commit(Constants.PRODUCTS_COLLECTION);
-    client.commit(Constants.PRODSKUS_COLLECTION);
-    System.out.println("Products committed.");
-  }
-
-  private static void indexSkus(CloudJettySolrClient client) throws Exception {
-    System.out.printf("Indexing %,d skus...%n", Constants.SKU_COUNT);
-    runParallel(
-        Constants.SKU_COUNT,
+        Constants.PRODUCT_COUNT,
+        List.of(Constants.PRODUCTS_COLLECTION, Constants.PRODSKUS_COLLECTION),
         List.of(Constants.SKUS_COLLECTION, Constants.PRODSKUS_COLLECTION),
         client,
         (rnd, i) -> {
-          SolrInputDocument doc = new SolrInputDocument();
-          doc.setField(Constants.SKU_ID, skuId(i));
-          // single-valued FK: exactly one product per sku, required by {!aijoin}'s M:1 mapping
-          int prodId=rnd.nextInt(Constants.PRODUCT_COUNT);
-          doc.setField(Constants.PRODUCT_ID_FK, productId(prodId));
-
-            doc.setField(Constants.PRODUCT_ID_FK_NUM, prodId);
-          doc.setField(
-              Constants.COLOR_KEYWORD, Constants.COLORS.get(rnd.nextInt(Constants.COLORS.size())));
-          doc.setField(
-              Constants.SIZE_KEYWORD, Constants.SIZES.get(rnd.nextInt(Constants.SIZES.size())));
-          doc.setField(Constants.INVENTORY_STOCK, rnd.nextInt(Constants.MAX_INVENTORY_STOCK + 1));
-          return doc;
+          // one group per product: the product doc first, then every sku pointing at it
+          List<SolrInputDocument> group = new ArrayList<>();
+          String prodId = productId(i);
+          SolrInputDocument product = new SolrInputDocument();
+          product.setField(Constants.PRODUCT_ID, prodId);
+          // self-referencing FK, for {!globalOrdinalsJoin} on the colo-index: Lucene's global
+          // ordinals join reads one and the same field on both sides, so a product is only
+          // reachable as a "to" doc when it carries the join value under PRODUCT_ID_FK too
+          product.setField(Constants.PRODUCT_ID_FK, prodId);
+          product.setField(Constants.PRODUCT_ID_NUM, i);
+          product.setField(Constants.TITLE, randomTitle(rnd));
+          product.setField(Constants.BRAND, Constants.BRANDS.get(rnd.nextInt(Constants.BRANDS.size())));
+          group.add(product);
+          int skuFrom = (int) ((long) i * Constants.SKU_COUNT / Constants.PRODUCT_COUNT);
+          int skuTo = (int) ((long) (i + 1) * Constants.SKU_COUNT / Constants.PRODUCT_COUNT);
+          for (int s = skuFrom; s < skuTo; s++) {
+            SolrInputDocument sku = new SolrInputDocument();
+            sku.setField(Constants.SKU_ID, skuId(s));
+            // single-valued FK: exactly one product per sku, required by {!aijoin}'s M:1 mapping
+            sku.setField(Constants.PRODUCT_ID_FK, prodId);
+            sku.setField(Constants.PRODUCT_ID_FK_NUM, i);
+            sku.setField(
+                Constants.COLOR_KEYWORD, Constants.COLORS.get(rnd.nextInt(Constants.COLORS.size())));
+            sku.setField(
+                Constants.SIZE_KEYWORD, Constants.SIZES.get(rnd.nextInt(Constants.SIZES.size())));
+            sku.setField(
+                Constants.INVENTORY_STOCK, rnd.nextInt(Constants.MAX_INVENTORY_STOCK + 1));
+            group.add(sku);
+          }
+          return group;
         });
+    client.commit(Constants.PRODUCTS_COLLECTION);
     client.commit(Constants.SKUS_COLLECTION);
     client.commit(Constants.PRODSKUS_COLLECTION);
-    System.out.println("Skus committed.");
+    System.out.println("Products and skus committed.");
   }
 
   static String productId(int i) {
@@ -112,13 +106,19 @@ public class Indexer {
 
   @FunctionalInterface
   private interface DocFactory {
-    SolrInputDocument create(Random rnd, int docIndex);
+    List<SolrInputDocument> create(Random rnd, int docIndex);
   }
 
   /** Splits {@code [0, count)} into {@link Constants#INDEXER_THREADS} contiguous ranges, one
-   * worker thread per range, each batching {@link Constants#INDEXER_BATCH_SIZE} docs per add. */
+   * worker thread per range, each batching {@link Constants#INDEXER_BATCH_SIZE} docs per add. A
+   * batch is flushed once it reaches the boundary; a product group that pushes it past the boundary
+   * is kept whole. */
   private static void runParallel(
-      int count, List<String> collection, CloudJettySolrClient client, DocFactory factory)
+      int count,
+      List<String> productCollections,
+      List<String> skuCollections,
+      CloudJettySolrClient client,
+      DocFactory factory)
       throws InterruptedException, ExecutionException {
     ExecutorService pool = Executors.newFixedThreadPool(Constants.INDEXER_THREADS);
     AtomicLong indexed = new AtomicLong();
@@ -131,7 +131,7 @@ public class Indexer {
       int workerSeed = t;
       futures.add(
           pool.submit(
-              () -> indexRange(client, collection, factory, from, to, workerSeed, indexed, count, startTime)));
+              () -> indexRange(client, productCollections, skuCollections, factory, from, to, workerSeed, indexed, startTime)));
     }
     pool.shutdown();
     for (Future<?> f : futures) {
@@ -140,34 +140,54 @@ public class Indexer {
   }
 
   private static void indexRange(
-          CloudJettySolrClient client,
-          List<String> collection,
-          DocFactory factory,
-          int from,
-          int to,
-          int workerSeed,
-          AtomicLong indexed,
-          int total,
-          long startTime) {
+      CloudJettySolrClient client,
+      List<String> productCollections,
+      List<String> skuCollections,
+      DocFactory factory,
+      int from,
+      int to,
+      int workerSeed,
+      AtomicLong indexed,
+      long startTime) {
     Random rnd = new Random(Constants.RANDOM_SEED + workerSeed);
-    List<SolrInputDocument> batch = new ArrayList<>(Constants.INDEXER_BATCH_SIZE);
+    List<SolrInputDocument> productBatch = new ArrayList<>(Constants.INDEXER_BATCH_SIZE);
+    List<SolrInputDocument> skuBatch = new ArrayList<>(Constants.INDEXER_BATCH_SIZE);
+    int pending = 0;
     int batchesSinceLog = 0;
+    int total = Constants.PRODUCT_COUNT + Constants.SKU_COUNT;
     for (int i = from; i < to; i++) {
-      batch.add(factory.create(rnd, i));
-      if (batch.size() >= Constants.INDEXER_BATCH_SIZE) {
-        sendBatch(client, collection, batch);
-        long done = indexed.addAndGet(batch.size());
+      List<SolrInputDocument> group = factory.create(rnd, i);
+      productBatch.add(group.get(0));
+      for (int g = 1; g < group.size(); g++) {
+        skuBatch.add(group.get(g));
+      }
+      pending += group.size();
+      if (pending >= Constants.INDEXER_BATCH_SIZE) {
+        flushBatches(client, productCollections, productBatch, skuCollections, skuBatch);
+        long done = indexed.addAndGet(pending);
         if (++batchesSinceLog >= 20) {
           logProgress(done, total, startTime);
           batchesSinceLog = 0;
         }
-        batch = new ArrayList<>(Constants.INDEXER_BATCH_SIZE);
+        productBatch = new ArrayList<>(Constants.INDEXER_BATCH_SIZE);
+        skuBatch = new ArrayList<>(Constants.INDEXER_BATCH_SIZE);
+        pending = 0;
       }
     }
-    if (!batch.isEmpty()) {
-      sendBatch(client, collection, batch);
-      logProgress(indexed.addAndGet(batch.size()), total, startTime);
+    if (pending > 0) {
+      flushBatches(client, productCollections, productBatch, skuCollections, skuBatch);
+      logProgress(indexed.addAndGet(pending), total, startTime);
     }
+  }
+
+  private static void flushBatches(
+      CloudJettySolrClient client,
+      List<String> productCollections,
+      List<SolrInputDocument> productBatch,
+      List<String> skuCollections,
+      List<SolrInputDocument> skuBatch) {
+    sendBatch(client, productCollections, productBatch);
+    sendBatch(client, skuCollections, skuBatch);
   }
 
   private static void sendBatch(

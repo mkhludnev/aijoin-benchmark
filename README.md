@@ -183,37 +183,30 @@ Three details of `SearchThenIndex` are what make rounds comparable at all:
   identical sequence is idempotent: separate invocations walk the index through the same states.
 
 Because there is no warmup and a commit precedes every round, the first `concurrency` queries of a
-round always land on a fresh searcher. That is the point -- the recurring post-commit cost is a
-thing being measured, not noise -- but it does mean a plain per-round average is not a latency
-number, and mixing it with the steady state hides both. See the next section.
+round always land on a fresh searcher. That is the point -- the recurring post-commit cost is the
+thing being measured. The intended shape is one update and then a few cold searches per round.
 
 ### Analysing the rounds
 
 `tools/searchindex_drift.py` reads the cumulative CSVs and answers the two questions they exist for:
-what each arm costs once a round is running, and whether that cost *drifts* as commits accumulate.
+what each arm costs right after an update, and whether that cost *drifts* as commits accumulate.
 
 ```
-tools/searchindex_drift.py                                        # all searchindex-results-*-c4.csv
-tools/searchindex_drift.py --from-round 11 --per-round
-tools/searchindex_drift.py --metric wall_ms searchindex-results-*-c8.csv
+tools/searchindex_drift.py                                        # newest run under reports/
+tools/searchindex_drift.py reports/<run> --from-round 11 --per-round
+tools/searchindex_drift.py --metric wall_ms reports/<run>/searchindex-results-*.csv
 ```
 
-It exists because a raw per-round mean conflates three separate effects, which it splits instead:
+Every query of a round counts; there is no cold/steady split. What it does correct for is **query
+difficulty**: queries are seeded per round, so a hard round lifts every arm at once and a naive
+trend line reads that as drift. The trend is therefore reported twice: raw, and normalised by the
+*other* arms' medians for the same round (leave-one-out geometric mean). What survives the
+normalisation is drift attributable to the parser itself.
 
-- **The post-commit cold burst.** The first `2 x concurrency` queries of each round are reported on
-  their own, as an excess over that round's steady median -- the rebuild, sized against what the
-  same round costs warm.
-- **The end-of-run drain.** The harness is a closed loop, so the last few queries of a round run
-  with fewer than `concurrency` in flight and are faster for that reason alone. They are dropped.
-- **Query difficulty.** Seeded per round, so a hard round lifts every arm at once and a naive trend
-  line reads that as drift. The trend is therefore reported twice: raw, and normalised by the
-  *other* arms' medians for the same round (leave-one-out geometric mean). What survives the
-  normalisation is drift attributable to the parser itself.
-
-Trends are fitted on the steady window only, as an OLS slope in %/round plus a Spearman rank
-correlation; the z-scores are a normal approximation that treats rounds as independent, so read
-`|z| < 3` as weak. It also checks `numFound` query-for-query across every file it loads -- the
-`compare` check, extended to all arms and all rounds.
+Trends are an OLS slope in %/round over the per-round medians, plus a Spearman rank correlation;
+the z-scores are a normal approximation that treats rounds as independent, so read `|z| < 3` as
+weak. It also checks `numFound` query-for-query across every file it loads -- the `compare` check,
+extended to all arms and all rounds.
 
 ### Measuring pruning efficiency
 

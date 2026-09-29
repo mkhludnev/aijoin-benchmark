@@ -10,9 +10,11 @@ Events understood:
     weight          one per query: pairs needed / already built / missing
     fromLeaf        one per from-segment per query: matches, whether its FK column was loaded
     fkload          one per from-side FK column load: size and cost
-    ctx             one per (query, to-segment) scored: cells, a-priori pruning, approximation
-    drain           one per pair column read while confirming
-    done            a context that had to converge
+    ctx             one per (query, to-segment) scored: cells, a-priori pruning, approximation;
+                    mode=lazy (confirm on demand) or mode=eager (drain every column up front,
+                    when no sibling clause leads the join)
+    drain           one per pair column read while confirming, or while draining eagerly
+    done            a context that had to converge; reason=eager for every eager context
     build           one per build-and-persist round: compute vs persist time, model layout
     readFieldInfos  one per sidecar segment inspected: pair columns it carries
     sweepSample, strandedColumn, purgeDeclined   the dead-pair reaper
@@ -28,6 +30,10 @@ and the terminal line attach to their context exactly, at any concurrency. Logs 
 field fall back to "most recent ``evt=ctx`` for the same ``toSeg``", which is only exact while a
 single query is in flight; the script says which mode it used and counts any line it could not
 attribute.
+
+Logs carrying ``mode=`` emit ``evt=ctx`` only for contexts that reach scoring, so a context whose
+every cell was pruned a priori leaves no line at all; the "pruned entirely" count is then n/a.
+Logs without ``mode=`` treat every context as lazy.
 """
 
 from __future__ import annotations
@@ -344,8 +350,13 @@ def report(log: Log):
 
     no_live = [c for c in contexts if c["ctx"].get("cellsLive", 0) == 0]
     with_live = [c for c in contexts if c["ctx"].get("cellsLive", 0) > 0]
-    converged = [c for c in with_live if c["done"] is not None]
-    lazy_held = [c for c in with_live if c["done"] is None]
+    # eager contexts drain every column by design; only lazy ones say anything about laziness
+    eager = [c for c in with_live if c["ctx"].get("mode") == "eager"]
+    lazy = [c for c in with_live if c["ctx"].get("mode") != "eager"]
+    converged = [c for c in lazy if c["done"] is not None]
+    lazy_held = [c for c in lazy if c["done"] is None]
+    # with mode= in the log, fully pruned contexts never reach get() and are not logged
+    has_mode = any("mode" in c["ctx"] for c in contexts)
 
     print("=" * WIDTH)
     print("Aux-index join instrumentation summary")
@@ -471,58 +482,91 @@ def report(log: Log):
     live = sum(c["ctx"].get("cellsLive", 0) for c in contexts)
     print(row("candidate pairs with a from-side match", fmt(created)))
     print(row("dropped before any column was opened", fmt(dropped), f"{fmt(pct(dropped, created))}%"))
+    # cellsEmpty (pairs mapping no from doc at all) is part of cellsDroppedApriori; the rest are
+    # pairs whose from-range the query's matches missed. Older logs lump the two together.
+    has_empty = any("cellsEmpty" in c["ctx"] for c in contexts)
+    empty = sum(c["ctx"].get("cellsEmpty", 0) for c in contexts)
+    if has_empty:
+        print(row("  pair maps no from doc at all (layout, not the query)", fmt(empty),
+                  f"{fmt(pct(empty, created))}%"))
+        print(row("  query's from matches outside the pair's from-range", fmt(dropped - empty),
+                  f"{fmt(pct(dropped - empty, created))}%"))
+    else:
+        print(row("  empty pair vs from-range miss", "n/a", "not split in this log"))
     print(row("surviving into confirmation", fmt(live)))
-    print(row("contexts pruned entirely (cellsLive=0)", fmt(len(no_live)), f"{fmt(pct(len(no_live), n_ctx))}%"))
+    if has_mode:
+        print(row("contexts pruned entirely (cellsLive=0)", "n/a", "not logged"))
+    else:
+        print(row("contexts pruned entirely (cellsLive=0)", fmt(len(no_live)), f"{fmt(pct(len(no_live), n_ctx))}%"))
 
     # ------------------------------------------------- approximation tightness
     section("Approximation tightness  (paper: 5.3 -- what bounds document-level pruning)")
+    # eager contexts build no approximation (approxCard=0), so they are left out
     covers = [
         pct(c["ctx"]["approxCard"], c["ctx"]["toMaxDoc"])
-        for c in with_live
+        for c in lazy
         if c["ctx"].get("toMaxDoc")
     ]
     overlap = [
         c["ctx"]["approxSpanSum"] / c["ctx"]["approxCard"]
-        for c in with_live
+        for c in lazy
         if c["ctx"].get("approxCard")
     ]
+    if eager:
+        print(row("eager contexts left out (no approximation built)", fmt(len(eager))))
     if covers:
         print(row("A-hat as % of the parent segment: mean / p50 / p90",
                   f"{fmt(mean(covers))}%", f"{fmt(median(covers))}%", f"{fmt(pctile(covers, 90))}%"))
     if overlap:
         print(row("range overlap factor (spanSum / card): mean", fmt(mean(overlap), 2)))
 
+    # ------------------------------------------------------------ scoring mode
+    if has_mode:
+        section("Scoring mode  (evt=ctx mode=)")
+        print(row("contexts with live columns: lazy / eager", fmt(len(lazy)), fmt(len(eager))))
+        if eager:
+            eager_drains = [d for c in eager for d in c["drains"]]
+            eager_live = sum(c["ctx"].get("cellsLive", 0) for c in eager)
+            print(row("eager: columns live / drained", fmt(eager_live), fmt(len(eager_drains))))
+            print(row("eager: from-docs walked", fmt(sum(d.get("walked", 0) for d in eager_drains))))
+            print(dist_row("eager: to-docs matched per context",
+                           [c["drains"][-1].get("hCard", 0) for c in eager if c["drains"]]))
+            unfinished = sum(1 for c in eager if c["done"] is None)
+            if unfinished:
+                print(row("eager contexts with no evt=done (unexpected)", fmt(unfinished)))
+
     # ---------------------------------------------------- document-level pruning
-    section("Document-level pruning  (paper: 5.3, 7.3 -- the half-read union)")
+    section("Document-level pruning  (paper: 5.3, 7.3 -- the half-read union; lazy contexts only)")
     # evt=drain is one dumpMatchesInto call, and a column stays live until its from-iterator is
     # exhausted, so the same column is drained again on later confirmations. Counting calls as
     # columns overstates the work done and can push "never opened" below zero.
-    drain_calls = sum(len(c["drains"]) for c in contexts)
-    opened = sum(len({d.get("pair") for d in c["drains"]}) for c in contexts)
-    never_opened = live - opened
-    early_exits = sum(1 for c in contexts for d in c["drains"] if d.get("confirmed") is True)
-    spared = sum(d.get("cellsLeft", 0) for c in contexts for d in c["drains"] if d.get("confirmed") is True)
-    walked = sum(d.get("walked", 0) for c in contexts for d in c["drains"])
-    n_live = len(with_live)
+    lazy_live = sum(c["ctx"].get("cellsLive", 0) for c in lazy)
+    drain_calls = sum(len(c["drains"]) for c in lazy)
+    opened = sum(len({d.get("pair") for d in c["drains"]}) for c in lazy)
+    never_opened = lazy_live - opened
+    early_exits = sum(1 for c in lazy for d in c["drains"] if d.get("confirmed") is True)
+    spared = sum(d.get("cellsLeft", 0) for c in lazy for d in c["drains"] if d.get("confirmed") is True)
+    walked = sum(d.get("walked", 0) for c in lazy for d in c["drains"])
+    n_live = len(lazy)
 
-    print(row("contexts with live columns", fmt(n_live)))
+    print(row("lazy contexts with live columns", fmt(n_live)))
     print(row("  where laziness held (no convergence)", fmt(len(lazy_held)), f"{fmt(pct(len(lazy_held), n_live))}%"))
     print(row("  forced to full convergence", fmt(len(converged)), f"{fmt(pct(len(converged), n_live))}%"))
     if converged:
         reasons = Counter(c["done"].get("reason", "?") for c in converged)
         for reason, n in reasons.most_common():
             print(row(f"    reason={reason}", fmt(n)))
-    print(row("distinct columns opened", fmt(opened), f"{fmt(pct(opened, live))}%"))
+    print(row("distinct columns opened", fmt(opened), f"{fmt(pct(opened, lazy_live))}%"))
     print(row("  column reads (drain calls) they cost", fmt(drain_calls),
               f"{fmt(drain_calls / opened, 2) if opened else 'n/a'}x"))
-    print(row("columns never opened", fmt(never_opened), f"{fmt(pct(never_opened, live))}%"))
+    print(row("columns never opened", fmt(never_opened), f"{fmt(pct(never_opened, lazy_live))}%"))
     print(row("drain calls ending in an early confirmation", fmt(early_exits),
               f"{fmt(pct(early_exits, drain_calls))}%"))
     # cellsLeft summed over confirmed drains counts columns *deferred*, not saved: if the context
     # later converges they get drained anyway. Only "columns never opened" is a real saving.
     print(row("columns deferred by them (may be drained later)", fmt(spared)))
     print(row("from-docs walked (column-read work)", fmt(walked)))
-    print(dist_row("from-docs walked per drain call", [d.get("walked", 0) for c in contexts for d in c["drains"]]))
+    print(dist_row("from-docs walked per drain call", [d.get("walked", 0) for c in lazy for d in c["drains"]]))
 
     if converged:
         calls = sum(c["done"].get("confirmCalls", 0) for c in converged)
@@ -653,15 +697,21 @@ def report(log: Log):
             )
 
     if created:
-        print(
-            f"- A-priori pruning (7.2) dropped {fmt(pct(dropped, created))}% of candidate pairs\n"
-            f"  before opening a single column. "
-            + (
-                "This is the level doing the visible work."
-                if pct(dropped, created) >= 25
-                else "Modest here -- the child ranges overlap the query's matches in most pairs."
-            )
+        line = (
+            f"- A-priori pruning (7.2) dropped {fmt(pct(dropped, created))}% of candidate pairs"
+            " before opening a single column"
         )
+        if has_empty:
+            line += (
+                f":\n  {fmt(pct(empty, created))}% mapped no from doc at all, "
+                f"{fmt(pct(dropped - empty, created))}% missed the query's from matches."
+            )
+        else:
+            line += (
+                ".\n  This log does not say how many of those pairs were simply empty (mapping no\n"
+                "  from doc) rather than missed by the query's from matches."
+            )
+        print(line)
 
     if covers:
         med = median(covers)
@@ -680,7 +730,7 @@ def report(log: Log):
 
     if n_live:
         held = pct(len(lazy_held), n_live)
-        unopened = pct(never_opened, live)
+        unopened = pct(never_opened, lazy_live)
         if unopened < 10:
             verdict = (
                 "  Avoiding convergence did not translate into avoided reads: nearly every live\n"
@@ -696,10 +746,15 @@ def report(log: Log):
                 "  worst case described in 5.3."
             )
         print(
-            f"- Document-level pruning (7.3): laziness held on {fmt(held)}% of contexts with live\n"
-            f"  columns, leaving {fmt(unopened)}% of surviving columns unopened.\n" + verdict
+            f"- Document-level pruning (7.3): laziness held on {fmt(held)}% of lazy contexts with\n"
+            f"  live columns, leaving {fmt(unopened)}% of surviving columns unopened.\n" + verdict
         )
-        if no_live:
+        if eager:
+            print(
+                f"  ({fmt(len(eager))} eager contexts are left out of that rate: with no sibling clause\n"
+                "  leading the join they drain every column up front by design.)"
+            )
+        if no_live and not has_mode:
             print(
                 f"  ({fmt(len(no_live))} further contexts had every column pruned a priori and are left out\n"
                 "  of that rate: they never had anything to be lazy about.)"
@@ -736,7 +791,7 @@ def report(log: Log):
 
 def write_csv(path, contexts):
     fields = [
-        "ctx", "toSeg", "toMaxDoc", "cellsCreated", "cellsDroppedApriori", "cellsLive",
+        "ctx", "toSeg", "mode", "toMaxDoc", "cellsCreated", "cellsDroppedApriori", "cellsEmpty", "cellsLive",
         "approxCard", "approxSpanSum", "colToCountSum", "buildMs",
         "drainCalls", "columnsOpened", "earlyExits", "fromDocsWalked", "converged", "reason",
         "confirmCalls", "freeHits", "modelsReleased", "rebindsAfterReap",
@@ -750,9 +805,11 @@ def write_csv(path, contexts):
                 {
                     "ctx": ctx.get("ctx"),
                     "toSeg": ctx.get("toSeg"),
+                    "mode": ctx.get("mode", ""),
                     "toMaxDoc": ctx.get("toMaxDoc"),
                     "cellsCreated": ctx.get("cellsCreated"),
                     "cellsDroppedApriori": ctx.get("cellsDroppedApriori"),
+                    "cellsEmpty": ctx.get("cellsEmpty", ""),
                     "cellsLive": ctx.get("cellsLive"),
                     "approxCard": ctx.get("approxCard"),
                     "approxSpanSum": ctx.get("approxSpanSum"),

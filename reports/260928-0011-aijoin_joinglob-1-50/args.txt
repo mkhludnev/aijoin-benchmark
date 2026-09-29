@@ -1,0 +1,1 @@
+--solr-url=http://localhost:8983/solr --parsers=aijoin,joinglob --query-count=1 --concurrency=1 --repeat=50 --no-to-filter --update=skus --no-concurrent-search --soft-commit

@@ -1,0 +1,21 @@
+searchindex drift report -- metric=qtime_ms, concurrency=1
+rounds 1..50 x 1 queries, all counted
+numFound disagreements across parsers: 0
+
+== cost after update (all queries, rounds >= 2) ==
+parser         p50      p90      p95      p99      max   vs fastest
+joinglob       104      116      124      143      143      1.0x
+aijoin         124      162      169      201      201      1.2x
+joinnum        328      410      415      426      426      3.2x
+jointop       4739     5327     5332     5381     5381     45.6x
+
+== drift across rounds 2..50 (median per round) ==
+parser      median   raw slope %/round        difficulty-normalised   Spearman(norm)
+aijoin         124    -0.40%/rd (z= -1.2)    -0.40%/rd (z= -1.0)  -17.4% over span   rho=-0.20 z= -1.4
+joinglob       104    -0.03%/rd (z= -0.4)    +0.19%/rd (z= +0.9)   +9.7% over span   rho=+0.15 z= +1.1
+joinnum        328    -0.09%/rd (z= -0.5)    +0.09%/rd (z= +0.6)   +4.3% over span   rho=+0.08 z= +0.6
+jointop       4739    -0.08%/rd (z= -0.6)    +0.12%/rd (z= +0.8)   +5.8% over span   rho=+0.06 z= +0.4
+
+raw slope includes the per-round query difficulty common to all parsers (that pool moved 292 -> 257 ms);
+the normalised column divides it out and is the one to read for parser-specific drift.
+z is a normal approximation and assumes independent rounds; treat |z| < 3 as weak.
