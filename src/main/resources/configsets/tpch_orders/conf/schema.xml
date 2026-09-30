@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- TPC-H ORDERS, reduced to the columns Q4 reads: the "to" side of the Q4 semijoin
+     lineitem.l_orderkey -> orders.o_orderkey. version 1.7: docValues default to true. -->
+<schema name="tpch_orders" version="1.7">
+  <fieldType name="string" class="solr.StrField"/>
+  <fieldType name="pint" class="solr.IntPointField"/>
+  <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="pdate" class="solr.DatePointField"/>
+
+  <!-- O_ORDERKEY as string: the unique key, and the "to" field of {!join}/{!aijoin} -->
+  <field name="o_orderkey" type="string" indexed="true" stored="true" docValues="true" required="true"/>
+  <!-- numeric mirror of the same key, for the joinnum arm -->
+  <field name="o_orderkey_num" type="pint" indexed="true" stored="false" docValues="true" required="true"/>
+  <!-- WHERE o_orderdate >= :1 AND o_orderdate < :1 + 3 months -->
+  <field name="o_orderdate" type="pdate" indexed="true" stored="false" docValues="true" required="true"/>
+  <!-- GROUP BY / ORDER BY o_orderpriority: faceted on, never searched as text -->
+  <field name="o_orderpriority" type="string" indexed="true" stored="false" docValues="true" required="true"/>
+
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+
+  <uniqueKey>o_orderkey</uniqueKey>
+</schema>

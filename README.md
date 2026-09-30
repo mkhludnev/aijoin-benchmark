@@ -234,6 +234,90 @@ per-to-segment fallback in `ToLeafJoinContext`. In a steady run the eager path d
 so a log with no `lazy-to-segment` lines is the expected shape -- not a sign of missing
 instrumentation.
 
+### TPC-H Q4 (`com.aijoin.tpchbenchmark`)
+
+A second workload: TPC-H Q4 (Order Priority Checking, spec 2.4.4) at SF=1, over two collections
+holding only the columns Q4 reads -- `tpch_orders` (`o_orderkey`, `o_orderdate`,
+`o_orderpriority`; 1,500,000 docs) and `tpch_lineitem` (`l_orderkey`, `l_commitdate`,
+`l_receiptdate`; 6,001,215 docs). Both keys also have a `*_num` int mirror for the `joinnum` arm.
+
+Q4's `exists (select * from lineitem where l_orderkey = o_orderkey and l_commitdate <
+l_receiptdate)` is a semijoin in the same `lineitem -> orders` (M:1) direction `{!aijoin}` needs.
+`Q4Query` generates the SQL text per query and translates it clause by clause into SolrJ params:
+
+| SQL | Solr |
+|---|---|
+| `exists (... l_orderkey = o_orderkey ...)` | `q={!join fromIndex=tpch_lineitem from=l_orderkey to=o_orderkey}...` (or `aijoin`/`jointop`/`joinnum`) |
+| `l_commitdate < l_receiptdate` | `{!frange l=0 incl=false}sub(ms(l_receiptdate),ms(l_commitdate))` as the join's from-query, or `l_late:true` for the `-flag` arms |
+| `o_orderdate >= :1 and < :1 + 3 months` | `fq=o_orderdate:[:1 TO :1+3M}` |
+| `group by / order by o_orderpriority`, `count(*)` | `rows=0&facet.field=o_orderpriority&facet.sort=index&facet.limit=-1` |
+
+`l_commitdate < l_receiptdate` compares two columns of one row, so the literal translation
+evaluates it per doc from docValues -- all 6M lineitems on every query, ~300 ms on its own, which
+dwarfs `{!aijoin}`'s join (~20 ms). The indexer therefore also stores the predicate precomputed as
+a boolean `l_late`, and every arm has a `-flag` variant (`aijoin-flag`, `join-flag`, ...) whose
+from-query is the term `l_late:true` instead of the `{!frange}`.
+
+`DATE` is drawn, per spec 2.4.4.3, as the first day of one of the 58 months 1993-01..1997-10,
+from a fixed seed. Since there are only 58 distinct queries, the configsets declare no query caches.
+
+Generate the data with the kit's dbgen (`-T o` produces orders and lineitem together, so their keys
+line up; SF=1 is ~930MB):
+
+```
+unzip 82F9B70B-AE70-4D93-A678-B933BFC996A6-TPC-H-Tool.zip -d build/ && cd "build/TPC-H V3.0.1/dbgen"
+sed -e 's/^CC *=.*/CC = gcc/' -e 's/^DATABASE *=.*/DATABASE = ORACLE/' \
+    -e 's/^MACHINE *=.*/MACHINE = LINUX/' -e 's/^WORKLOAD *=.*/WORKLOAD = TPCH/' makefile.suite > makefile
+make CFLAGS='-g -DDBNAME=\"dss\" -DLINUX -DORACLE -DTPCH -DRNG_TEST -D_FILE_OFFSET_BITS=64 -fcommon -w' dbgen
+./dbgen -f -s 1 -T o && mkdir -p ../../tpch-sf1 && mv orders.tbl lineitem.tbl ../../tpch-sf1/
+```
+
+then:
+
+```
+./gradlew tpchSetupCollections -Pargs="http://localhost:8983/solr"
+./gradlew tpchIndex            -Pargs="http://localhost:8983/solr build/tpch-sf1"
+./gradlew tpchSearch           -Pargs="sql 1995-03-01"          # print SQL + Solr params, offline
+./gradlew tpchSearch           -Pargs="validate http://localhost:8983/solr join jointop aijoin joinnum"
+./gradlew tpchSearch           -Pargs="http://localhost:8983/solr aijoin 100 1 10"
+./gradlew tpchSearch           -Pargs="http://localhost:8983/solr aijoin-flag 100 1 10"
+./gradlew search               -Pargs="compare results-tpch-q4-join-c1.csv results-tpch-q4-aijoin-c1.csv"
+```
+
+`tpchSetupCollections` drops and recreates only the two `tpch_*` collections. `validate` runs the
+spec's validation query (`DATE = 1993-07-01`) and checks every priority count against
+`answers/q4.out`. A benchmark run writes `results-tpch-q4-<parser>-c<concurrency>.csv` in the
+`Searcher` CSV format, plus `date` and per-priority `counts` columns.
+
+#### Q4 under refresh (RF1/RF2)
+
+`tpchSearchThenRefresh` is the TPC-H counterpart of `searchThenIndex`: each round applies one
+refresh pair -- RF1 inserts 1500 orders with their ~5.8-6.1k lineitems, RF2 deletes 1500 other
+orders and their ~6k lineitems, ~15k doc changes -- then runs Q4 through every arm. The refresh is
+not timed; the point is what a commit costs the searches after it.
+
+```
+cd build/tpch-sf1 && mkdir -p refresh && cd refresh && cp "../../TPC-H V3.0.1/dbgen/dists.dss" .
+"../../TPC-H V3.0.1/dbgen/dbgen" -f -s 1 -U 40      # 40 pairs: orders.tbl.uN, lineitem.tbl.uN, delete.N
+cd ../../.. && ./gradlew tpchSearchThenRefresh -Pargs="--solr-url=http://localhost:8983/solr --repeat=30"
+./gradlew tpchSearchThenRefresh -Pargs="--summarize=reports/<run>"
+```
+
+- **Commit order.** Two collections cannot commit atomically, so lineitem is committed before
+  orders: new lineitems have no order yet, and deleted orders only lose their lineitems, so every
+  intermediate state is still a valid database as far as Q4 can see. RF2 deletes lineitems by id
+  (`<orderkey>-1..7`), not `deleteByQuery`, which would block updates and force a searcher reopen.
+- **Reset.** RF1 keys fill gaps in the base key space and RF2 keys come from its start, so they never
+  meet. Each run first undoes every generated pair (drops the RF1 rows, re-adds the RF2 rows from the
+  base `.tbl` files) and so starts from the base state: separate runs see identical data per round.
+- **Per round and arm, at concurrency 1:** query 0 is *cold* (first search on the fresh searcher),
+  queries 1..n-1 are *warm*, and query 0 re-run at the end is its *twin*. `cold - twin` is the commit
+  penalty with query difficulty cancelled out. One cold sample per round, so its spread comes from
+  the number of rounds, not the queries per round. Queries 1..4 after a commit still run a little
+  slow for `{!aijoin}` (+50-130 ms); the warm median over 19 queries absorbs that.
+- `summary.txt` gives cold/warm/penalty p50 and p90 across rounds, a per-round trend, and checks that
+  all arms -- and every cold/twin pair -- agree on the per-priority counts.
+
 ### Bash notes
 
 ssh -l ... -i ~/.ssh/ssh-key -L 8983:localhost:8983 ...

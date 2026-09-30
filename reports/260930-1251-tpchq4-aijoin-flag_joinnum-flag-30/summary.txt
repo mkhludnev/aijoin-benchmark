@@ -1,0 +1,13 @@
+TPC-H Q4 search-then-refresh: reports/260930-1251-tpchq4-aijoin-flag_joinnum-flag-30, rounds >= 2, QTime in ms
+
+arm           rounds |  cold   p90   max |  warm   p90 | penalty     p90 |   warm/rd   cold/rd
+                     |   p50             |   p50       |     p50         |     trend     trend
+aijoin-flag       29 |   769  1960  4107 |   147   156 |     618    1818 |    -0.01%     0.95%
+joinnum-flag      29 |   863   889  1116 |   855   883 |      -9      56 |     0.14%     0.04%
+
+cold    = query 0 of a round, the first search after the refresh commit
+warm    = median of the round's queries 1..n-1 (p90 over all warm queries)
+penalty = cold minus its twin (query 0 re-run warm at the round's end)
+trend   = OLS slope of the per-round value, % of its mean per round
+
+result check: 0 per-priority count mismatches across arms and cold/twin pairs, 0 errors

@@ -1,0 +1,23 @@
+<?xml version="1.0" ?>
+<config>
+  <schemaFactory class="ClassicIndexSchemaFactory"/>
+  <luceneMatchVersion>LATEST</luceneMatchVersion>
+
+  <dataDir>${solr.data.dir:}</dataDir>
+
+  <updateHandler class="solr.DirectUpdateHandler2">
+    <updateLog/>
+    <autoCommit>
+      <maxTime>60000</maxTime>
+      <openSearcher>false</openSearcher>
+    </autoCommit>
+  </updateHandler>
+
+  <!-- no <query> caches on purpose: Q4 has only 58 distinct DATE values, so a filter or result
+       cache would turn every repeat into a lookup and stop measuring the join -->
+
+  <requestHandler name="/select" class="solr.SearchHandler"/>
+
+  <!-- TPC-H Q4 semijoin: tpch_lineitem.l_orderkey -> tpch_orders.o_orderkey -->
+  <queryParser name="aijoin" class="org.apache.solr.search.join.AuxIndexJoinQParserPlugin"/>
+</config>

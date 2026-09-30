@@ -18,6 +18,7 @@ dependencies {
     implementation "org.apache.solr:solr-solrj:${solrjVersion}"
     implementation "org.apache.solr:solr-solrj-jetty:${solrjVersion}"
     runtimeOnly 'org.slf4j:slf4j-simple:2.0.16'
+    implementation "org.postgresql:postgresql:42.7.4"
 }
 
 application {
@@ -57,6 +58,58 @@ tasks.register('searchThenIndex', JavaExec) {
     description = 'Alternates search rounds with random product/sku updates (pass options via -Pargs="..."; run without args for usage)'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'com.aijoin.benchmark.SearchThenIndex'
+    args = appArgs
+    standardOutput = System.out
+}
+
+tasks.register('tpchSetupCollections', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Creates the TPC-H Q4 tpch_orders/tpch_lineitem collections (pass -Pargs="<solrUrl>")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.tpchbenchmark.TpchSetupCollections'
+    args = appArgs
+}
+
+tasks.register('tpchIndex', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Loads dbgen SF=1 orders.tbl/lineitem.tbl (pass -Pargs="<solrUrl> <tblDir>")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.tpchbenchmark.TpchIndexer'
+    args = appArgs
+}
+
+tasks.register('tpchSearch', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Runs TPC-H Q4 (pass -Pargs="<solrUrl> <join|jointop|aijoin|joinnum> <queryCount> [concurrency] [warmupCount]", "validate <solrUrl> <parser>...", or "sql [date]")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.tpchbenchmark.TpchSearcher'
+    args = appArgs
+    standardOutput = System.out
+}
+
+tasks.register('pgSearch', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'Runs the same TPC-H Q4 SQL over JDBC (pass -Pargs="<jdbcUrl> <label> <queryCount> [concurrency] [warmupCount]")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.tpchbenchmark.PgSearcher'
+    args = appArgs
+    standardOutput = System.out
+}
+
+tasks.register('tpchSearchThenRefresh', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'TPC-H Q4 rounds, each after one RF1+RF2 refresh pair (run without -Pargs for usage)'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.tpchbenchmark.TpchSearchThenRefresh'
+    args = appArgs
+    standardOutput = System.out
+}
+
+tasks.register('pgSearchThenRefresh', JavaExec) {
+    group = 'aijoin-benchmark'
+    description = 'TPC-H Q4 refresh rounds on PostgreSQL (pass -Pargs="<jdbcUrl> <label> [repeat] [queryCount] [tblDir]")'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.aijoin.tpchbenchmark.PgSearchThenRefresh'
     args = appArgs
     standardOutput = System.out
 }

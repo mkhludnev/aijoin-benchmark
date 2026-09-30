@@ -1,0 +1,1 @@
+--solr-url=http://localhost:8983/solr --repeat=3 --first-round-query-count=50

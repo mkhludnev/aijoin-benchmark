@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- TPC-H LINEITEM, reduced to the columns Q4 reads: the "from" side of the Q4 semijoin
+     lineitem.l_orderkey -> orders.o_orderkey. version 1.7: docValues default to true. -->
+<schema name="tpch_lineitem" version="1.7">
+  <fieldType name="string" class="solr.StrField"/>
+  <fieldType name="pint" class="solr.IntPointField"/>
+  <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="pdate" class="solr.DatePointField"/>
+  <fieldType name="boolean" class="solr.BoolField"/>
+
+  <!-- LINEITEM's primary key is (L_ORDERKEY, L_LINENUMBER); Solr needs one field, "<orderkey>-<linenumber>" -->
+  <field name="id" type="string" indexed="true" stored="true" docValues="true" required="true"/>
+  <!-- single-valued FK: every lineitem belongs to exactly one order, as {!aijoin}'s M:1 doc
+       mapping requires -->
+  <field name="l_orderkey" type="string" indexed="true" stored="false" docValues="true" required="true"/>
+  <field name="l_orderkey_num" type="pint" indexed="false" stored="false" docValues="true" required="true"/>
+  <!-- l_commitdate < l_receiptdate compares two columns of the same row, which no index can
+       answer: the plain arms evaluate it per doc from these docValues, via {!frange} over ms(),
+       ~300ms for all 6M docs, on every query. -->
+  <field name="l_commitdate" type="pdate" indexed="false" stored="false" docValues="true" required="true"/>
+  <field name="l_receiptdate" type="pdate" indexed="false" stored="false" docValues="true" required="true"/>
+  <!-- the same predicate, precomputed at index time so the "-flag" arms can match it as a term -->
+  <field name="l_late" type="boolean" indexed="true" stored="false" docValues="true" required="true"/>
+
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+
+  <uniqueKey>id</uniqueKey>
+</schema>

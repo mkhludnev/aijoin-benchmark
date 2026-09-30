@@ -3,9 +3,13 @@ package com.aijoin.benchmark;
 import java.io.IOException;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -63,7 +67,7 @@ public class SetupCollections {
     System.out.println("Setup complete.");
   }
 
-  private static void deleteCollectionIfPresent(CloudJettySolrClient client, String collection)
+  public static void deleteCollectionIfPresent(CloudJettySolrClient client, String collection)
       throws SolrServerException, IOException {
     if (CollectionAdminRequest.listCollections(client).contains(collection)) {
       System.out.println("Deleting collection '" + collection + "'...");
@@ -71,7 +75,7 @@ public class SetupCollections {
     }
   }
 
-  private static void createCollection(
+  public static void createCollection(
       CloudJettySolrClient client, String collection, String configName)
       throws SolrServerException, IOException {
     System.out.println("Creating collection '" + collection + "' (1 shard, 1 replica)...");
@@ -104,7 +108,7 @@ public class SetupCollections {
    * Zips {@code configsets/<name>/conf} off the classpath and uploads it as config {@code name},
    * replacing whatever config of that name was there before.
    */
-  private static void uploadConfigSet(CloudJettySolrClient client, String name)
+  public static void uploadConfigSet(CloudJettySolrClient client, String name)
       throws IOException, SolrServerException, URISyntaxException {
     URL confUrl = SetupCollections.class.getClassLoader().getResource("configsets/" + name + "/conf");
     if (confUrl == null) {
@@ -123,6 +127,60 @@ public class SetupCollections {
           .process(client);
     } finally {
       Files.deleteIfExists(zip);
+    }
+  }
+
+  /**
+   * Uploads {@code configsets/<name>/conf} as config {@code <name>-<content hash>}, dropping every
+   * other {@code <name>-*} config, and returns the uploaded name.
+   *
+   * <p>Deleting and re-uploading a config under one fixed name, as {@link #uploadConfigSet} does, is
+   * not enough to get an edited schema.xml read: Solr caches parsed schemas keyed by config name
+   * and schema znode version, a fresh upload restarts that version at 0, and so the new collection
+   * is handed the previous upload's cached schema -- ZooKeeper holds the edit, the core's file
+   * reads back the edit, a RELOAD keeps the stale schema all the same. Naming the config after its
+   * content makes every edit a new cache key. Call it only once no collection uses the old configs.
+   */
+  public static String uploadVersionedConfigSet(CloudJettySolrClient client, String name)
+      throws IOException, SolrServerException, URISyntaxException {
+    URL confUrl = SetupCollections.class.getClassLoader().getResource("configsets/" + name + "/conf");
+    if (confUrl == null) {
+      throw new IllegalStateException("configset resource not found on classpath: " + name);
+    }
+    Path confDir = Paths.get(confUrl.toURI());
+    String configName = name + "-" + contentHash(confDir);
+
+    for (String existing : new ConfigSetAdminRequest.List().process(client).getConfigSets()) {
+      if (existing.equals(name) || existing.startsWith(name + "-")) {
+        System.out.println("Deleting configset '" + existing + "'...");
+        new ConfigSetAdminRequest.Delete().setConfigSetName(existing).process(client);
+      }
+    }
+    Path zip = Files.createTempFile("aijoin-benchmark-" + name + "-", ".zip");
+    try {
+      zipDirectory(confDir, zip);
+      System.out.println("Uploading configset '" + configName + "'...");
+      new ConfigSetAdminRequest.Upload()
+          .setConfigSetName(configName)
+          .setUploadFile(zip, "application/zip")
+          .process(client);
+    } finally {
+      Files.deleteIfExists(zip);
+    }
+    return configName;
+  }
+
+  /** First 8 hex digits of a SHA-256 over every file's relative path and bytes, in path order. */
+  private static String contentHash(Path dir) throws IOException {
+    try (var files = Files.walk(dir)) {
+      MessageDigest sha = MessageDigest.getInstance("SHA-256");
+      for (Path file : (Iterable<Path>) files.filter(Files::isRegularFile).sorted()::iterator) {
+        sha.update(dir.relativize(file).toString().getBytes(StandardCharsets.UTF_8));
+        sha.update(Files.readAllBytes(file));
+      }
+      return HexFormat.of().formatHex(sha.digest()).substring(0, 8);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
     }
   }
 
