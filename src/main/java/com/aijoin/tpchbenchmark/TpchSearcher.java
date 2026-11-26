@@ -42,8 +42,7 @@ import org.apache.solr.client.solrj.response.QueryResponse;
  *   tpchSearch &lt;solrBaseUrl&gt; &lt;parser&gt; &lt;queryCount&gt; [concurrency] [warmupCount]
  * </pre>
  *
- * where parser is one of {@code join|jointop|aijoin|joinnum}, optionally suffixed {@code -flag} to
- * match the precomputed {@code l_late} flag rather than compare the two dates per doc.
+ * where parser is one of {@code join|jointop|aijoin|joinnum}.
  */
 public class TpchSearcher {
 
@@ -66,7 +65,7 @@ public class TpchSearcher {
       Q4Query query =
           new Q4Query(args.length > 1 ? LocalDate.parse(args[1]) : TpchConstants.VALIDATION_DATE);
       System.out.println(query.sql());
-      for (String parser : List.of("join", "jointop", "aijoin", "joinnum", "aijoin-flag")) {
+      for (String parser : List.of("join", "jointop", "aijoin", "joinnum")) {
         System.out.printf(
             "%s -> /%s/select?%s%n", parser, TpchConstants.ORDERS_COLLECTION, query.toSolrParams(parser));
       }

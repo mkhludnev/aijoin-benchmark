@@ -18,8 +18,8 @@ import org.apache.solr.common.params.ModifiableSolrParams;
  *     and o_orderdate < date ':1' + 3 month
  *     and exists (select * from lineitem      q={!join fromIndex=tpch_lineitem
  *                 where l_orderkey = o_orderkey          from=l_orderkey to=o_orderkey}
- *                   and l_commitdate &lt; l_receiptdate)   {!frange l=0 incl=false}
- *                                                           sub(ms(l_receiptdate),ms(l_commitdate))
+ *                   and l_commitdate &lt; l_receiptdate)   {!frange l=1 u=1}
+ *                                                           date_greater(ms(l_receiptdate),ms(l_commitdate))
  *   group by o_orderpriority                  facet.limit=-1, facet.mincount=1
  *   order by o_orderpriority                  facet.sort=index
  * </pre>
@@ -29,26 +29,21 @@ import org.apache.solr.common.params.ModifiableSolrParams;
  * in {@code fq}, as in the products/skus benchmark: a join result intersected with a to-side local
  * filter. {@code l_commitdate < l_receiptdate} compares two columns of one row, which an inverted
  * index cannot answer, so it is a function range over docValues -- evaluated for every lineitem on
- * every query. An arm name ending in {@value #FLAG_SUFFIX} (e.g. {@code aijoin-flag}) instead
- * matches {@code l_late:true}, the same predicate precomputed at index time.
+ * every query.
  *
  * @param date the Q4 {@code DATE} parameter, the first day of a month
  */
 record Q4Query(LocalDate date) {
 
-  /** The late-lineitem predicate, as a from-side query. */
+  /** The late-lineitem predicate, as a from-side query over the {@code date_greater} value source
+   *  parser declared in {@code configsets/tpch_lineitem/conf/solrconfig.xml}: {@code l_commitdate <
+   *  l_receiptdate} iff the expression evaluates to exactly 1. */
   static final String LATE_LINEITEM =
-      "{!frange l=0 incl=false}sub(ms("
+      "{!frange l=1 u=1}date_greater(ms("
           + TpchConstants.L_RECEIPTDATE
           + "),ms("
           + TpchConstants.L_COMMITDATE
           + "))";
-
-  /** The late-lineitem predicate precomputed by the indexer, as a term query. */
-  static final String LATE_FLAG = TpchConstants.L_LATE + ":true";
-
-  /** Arm-name suffix selecting {@link #LATE_FLAG} over {@link #LATE_LINEITEM}. */
-  static final String FLAG_SUFFIX = "-flag";
 
   /** Spec 2.4.4.3: first day of a month drawn uniformly from 1993-01 .. 1997-10. */
   static Q4Query random(Random rnd) {
@@ -96,7 +91,7 @@ record Q4Query(LocalDate date) {
 
   /** The {@code exists (...)} subquery as a join from lineitem to orders, via {@code arm}. */
   String existsQuery(String arm) {
-    return "{!" + joinLocalParams(arm) + "}" + (arm.endsWith(FLAG_SUFFIX) ? LATE_FLAG : LATE_LINEITEM);
+    return "{!" + joinLocalParams(arm) + "}" + LATE_LINEITEM;
   }
 
   /** Builds the SolrJ params answering this query, to run against {@link TpchConstants#ORDERS_COLLECTION}. */
@@ -117,7 +112,7 @@ record Q4Query(LocalDate date) {
 
   /** The {@code {!...}} local-params fragment joining lineitem to orders for an arm. */
   static String joinLocalParams(String arm) {
-    String parser = arm.endsWith(FLAG_SUFFIX) ? arm.substring(0, arm.length() - FLAG_SUFFIX.length()) : arm;
+    String parser = arm;
     String strKeys =
         " fromIndex=" + TpchConstants.LINEITEM_COLLECTION
             + " from=" + TpchConstants.L_ORDERKEY
@@ -131,7 +126,7 @@ record Q4Query(LocalDate date) {
           + " from=" + TpchConstants.L_ORDERKEY_NUM
           + " to=" + TpchConstants.O_ORDERKEY_NUM;
       default -> throw new IllegalArgumentException(
-          "arm must be 'join|jointop|aijoin|joinnum', optionally with a '-flag' suffix: " + arm);
+          "arm must be 'join|jointop|aijoin|joinnum': " + arm);
     };
   }
 }

@@ -45,7 +45,7 @@ import org.apache.solr.common.params.ModifiableSolrParams;
  * <p>Usage:
  *
  * <pre>
- *   tpchSearchThenRefresh --solr-url=&lt;url&gt; [--parsers=aijoin-flag,joinnum-flag] [--query-count=20]
+ *   tpchSearchThenRefresh --solr-url=&lt;url&gt; [--parsers=aijoin,joinnum] [--query-count=20]
  *       [--first-round-query-count=&lt;n&gt;] [--repeat=30] [--tbl-dir=build/tpch-sf1]
  *       [--refresh-dir=&lt;tbl-dir&gt;/refresh] [--no-reset]
  *   tpchSearchThenRefresh --summarize=reports/&lt;run&gt; [--from-round=2]
@@ -74,7 +74,7 @@ public class TpchSearchThenRefresh {
     }
     String solrUrl = opts.get("solr-url");
     List<String> parsers =
-        new ArrayList<>(Arrays.asList(opts.getOrDefault("parsers", "aijoin-flag,joinnum-flag").split(",")));
+        new ArrayList<>(Arrays.asList(opts.getOrDefault("parsers", "aijoin,joinnum").split(",")));
     int queryCount = Integer.parseInt(opts.getOrDefault("query-count", "20"));
     int firstRoundQueryCount =
         Integer.parseInt(opts.getOrDefault("first-round-query-count", String.valueOf(queryCount)));
@@ -311,7 +311,7 @@ public class TpchSearchThenRefresh {
 
   private static void usage() {
     System.err.println(
-        "Usage: tpchSearchThenRefresh --solr-url=<url> [--parsers=aijoin-flag,joinnum-flag]"
+        "Usage: tpchSearchThenRefresh --solr-url=<url> [--parsers=aijoin,joinnum]"
             + " [--query-count=20] [--first-round-query-count=<n>] [--repeat=30]"
             + " [--tbl-dir=build/tpch-sf1] [--refresh-dir=<tbl-dir>/refresh] [--no-reset]");
     System.err.println("       tpchSearchThenRefresh --summarize=reports/<run> [--from-round=2]");
