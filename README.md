@@ -87,16 +87,16 @@ bin/solr start -c -a "-Dsolr.searchThreads=4"
 collection and configset it owns first, then recreates them. `index` bulk-loads the 1M/10M docs
 into their own collections and into `products_skus`.
 
-`search <solrUrl> <join|aijoin|joinnum|joinglob> <queryCount> [concurrency] [warmupCount]` runs a fixed number of
-queries at a fixed concurrency (default 1, i.e. strictly one query in flight at a time), prints
-QTime and client-latency percentiles, and writes one CSV row per query to
-`results-<parser>-c<concurrency>.csv`.
+`search <solrUrl> <join|aijoin|joinnum|joinglob> <queryCount> [concurrency] [warmupCount]
+[minExactCount]` runs a fixed number of queries at a fixed concurrency (default 1, i.e. strictly
+one query in flight at a time), prints QTime and client-latency percentiles, and writes one CSV row
+per query to `results-<parser>-c<concurrency>.csv`.
 
 Each query filters skus by 2-4 random Color values *or* 2-4 random Size values (never both), joined
 back to products, further filtered by 1-3 random brands directly on the products side (`fq`, not
 through the join) -- exercising a join result intersected with a local filter, not just the join
-alone. `minExactCount` is forced to `Integer.MAX_VALUE` so `numFound` is always exact, and `rows=0`
-since only the count matters here.
+alone. `minExactCount` defaults to `Integer.MAX_VALUE` so `numFound` is always exact; a smaller
+value (or 0) exercises Solr's approximate count. `rows=0` since only the count matters here.
 
 ### Proving the parsers agree
 
@@ -426,3 +426,6 @@ QTime (ms)  : min=172 max=9471 avg=334.5
 numFound    : min=20792 max=87399 avg=50790.6
 ```
 
+### Notes
+
+curl -X POST "http://localhost:8983/solr/products/update?commit=true" -H "Content-Type: application/json" --data-binary '{"delete": {"query": "*:*"}}'

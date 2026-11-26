@@ -27,5 +27,4 @@
   </updateHandler>
 
   <requestHandler name="/select" class="solr.SearchHandler"/>
-  <queryParser name="aijoin" class="org.apache.solr.search.join.AuxIndexJoinQParserPlugin"/>
 </config>

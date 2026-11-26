@@ -19,5 +19,7 @@
   <requestHandler name="/select" class="solr.SearchHandler"/>
 
   <!-- TPC-H Q4 semijoin: tpch_lineitem.l_orderkey -> tpch_orders.o_orderkey -->
-  <queryParser name="aijoin" class="org.apache.solr.search.join.AuxIndexJoinQParserPlugin"/>
+  <valueSourceParser name="date_greater" class="solr.ExpressionValueSourceParser">
+    <str name="expression">$1 > $2 ? 1 : 0</str>
+  </valueSourceParser>
 </config>

@@ -54,6 +54,7 @@ import org.apache.solr.common.SolrInputDocument;
  *   searchThenIndex --solr-url=&lt;solrBaseUrl&gt; --parsers=&lt;join,aijoin,joinnum,joinglob,...&gt;
  *                   --query-count=&lt;n&gt; [--concurrency=&lt;n&gt;] [--repeat=&lt;n&gt;] [--no-to-filter]
  *                   [--update=products,skus] [--no-concurrent-search] [--soft-commit]
+ *                   [--min-exact-count=&lt;n&gt;]
  * </pre>
  *
  * <p>Each option may also be given as {@code --name value}. {@code --no-to-filter} drops the
@@ -67,6 +68,9 @@ import org.apache.solr.common.SolrInputDocument;
  * --no-concurrent-search} skips the aijoin consistency probe, so no search runs concurrently with
  * the update. {@code --soft-commit} ends each update with a soft commit instead of a hard one:
  * the new docs become visible on a fresh searcher without flushing segments to disk.
+ *
+ * <p>{@code --min-exact-count=<n>} passes Solr's {@code minExactCount}: {@code numFound} is
+ * exact only while it stays below that value (default {@code Integer.MAX_VALUE}: always exact).
  */
 public class SearchThenIndex {
 
@@ -75,10 +79,13 @@ public class SearchThenIndex {
   private static final String USAGE =
       "Usage: searchThenIndex --solr-url=<solrBaseUrl> --parsers=<join,aijoin,joinnum,joinglob,...>"
           + " --query-count=<n> [--concurrency=<n>] [--repeat=<n>] [--no-to-filter]"
-          + " [--update=products,skus] [--no-concurrent-search] [--soft-commit]";
+          + " [--update=products,skus] [--no-concurrent-search] [--soft-commit]"
+          + " [--min-exact-count=<n>]";
 
   private static final Set<String> OPTIONS =
-      Set.of("solr-url", "parsers", "query-count", "concurrency", "repeat", "update");
+      Set.of(
+          "solr-url", "parsers", "query-count", "concurrency", "repeat", "update",
+          "min-exact-count");
 
   /** Options that take no value. */
   private static final Set<String> FLAGS = Set.of("no-to-filter", "no-concurrent-search", "soft-commit");
@@ -99,6 +106,8 @@ public class SearchThenIndex {
     int queryCount = Integer.parseInt(opts.get("query-count"));
     int concurrency = Integer.parseInt(opts.getOrDefault("concurrency", "1"));
     int repeat = Integer.parseInt(opts.getOrDefault("repeat", "1"));
+    long minExactCount =
+        Long.parseLong(opts.getOrDefault("min-exact-count", String.valueOf(Integer.MAX_VALUE)));
     boolean toFilter = !opts.containsKey("no-to-filter");
     boolean concurrentSearch = !opts.containsKey("no-concurrent-search");
     Set<String> updateModes = Set.of(opts.getOrDefault("update", "products,skus").split(","));
@@ -109,8 +118,9 @@ public class SearchThenIndex {
     boolean updateSkus = updateModes.contains("skus");
     boolean softCommit = opts.containsKey("soft-commit");
 
-    if (queryCount < 1 || concurrency < 1 || repeat < 1) {
-      throw new IllegalArgumentException("queryCount, concurrency and repeat must be >= 1");
+    if (queryCount < 1 || concurrency < 1 || repeat < 1 || minExactCount < 0) {
+      throw new IllegalArgumentException(
+          "queryCount, concurrency and repeat must be >= 1; minExactCount must be >= 0");
     }
 
     Path reportDir =
@@ -138,7 +148,9 @@ public class SearchThenIndex {
               "Round %d/%d: running {!%s} %d queries at concurrency %d (no warmup)...%n",
               round, repeat, parser, queryCount, concurrency);
           Searcher.Result[] results =
-              Searcher.run(client, localParams, generateQueries(queryCount, seed, toFilter), concurrency);
+              Searcher.run(
+                  client, localParams, generateQueries(queryCount, seed, toFilter),
+                  concurrency, minExactCount);
           Path csv =
               reportDir.resolve(
                   String.format(
@@ -155,7 +167,8 @@ public class SearchThenIndex {
             softCommit ? "soft" : "hard");
         if (concurrentSearch && parsers.contains("aijoin")) {
           if (!updateDataWithConsistencyProbe(
-              client, round, repeat, toFilter, updateProducts, updateSkus, softCommit)) {
+              client, round, repeat, toFilter, updateProducts, updateSkus, softCommit,
+              minExactCount)) {
             System.out.println("Aborting: aijoin update-consistency probe failed.");
             return;
           }
@@ -231,13 +244,14 @@ public class SearchThenIndex {
       boolean toFilter,
       boolean updateProducts,
       boolean updateSkus,
-      boolean softCommit)
+      boolean softCommit,
+      long minExactCount)
       throws Exception {
     long probeSeed = Constants.RANDOM_SEED + 1 + new Random().nextInt(repeat);
     Searcher.QuerySpec query = generateQueries(1, probeSeed, toFilter).get(0);
-    String aijoinParams = Searcher.localParams("aijoin");
+    String aijoinParams = Searcher.localParams("auxIndexJoin");
 
-    Searcher.Result pre = Searcher.runOneQuery(client, aijoinParams, -1, query);
+    Searcher.Result pre = Searcher.runOneQuery(client, aijoinParams, -1, query, minExactCount);
     if (pre.error() != null) {
       System.err.println("aijoin probe: pre-update query failed: " + pre.error());
       return false;
@@ -258,7 +272,7 @@ public class SearchThenIndex {
             });
 
     for (int k = 0; k < intraRuns; k++) {
-      Searcher.Result intra = Searcher.runOneQuery(client, aijoinParams, -1, query);
+      Searcher.Result intra = Searcher.runOneQuery(client, aijoinParams, -1, query, minExactCount);
       if (intra.error() != null) {
         System.err.println("aijoin probe: intra-update query " + k + " failed: " + intra.error());
         updateFuture.cancel(true);
@@ -271,7 +285,7 @@ public class SearchThenIndex {
     updateFuture.get();
     updatePool.shutdown();
 
-    Searcher.Result post = Searcher.runOneQuery(client, aijoinParams, -1, query);
+    Searcher.Result post = Searcher.runOneQuery(client, aijoinParams, -1, query, minExactCount);
     if (post.error() != null) {
       System.err.println("aijoin probe: post-update query failed: " + post.error());
       return false;

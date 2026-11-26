@@ -125,7 +125,7 @@ record Q4Query(LocalDate date) {
     return switch (parser) {
       case "join" -> "join score=none" + strKeys;
       case "jointop" -> "join score=none method=topLevelDV" + strKeys;
-      case "aijoin" -> "aijoin" + strKeys;
+      case "aijoin" -> "auxIndexJoin" + strKeys;
       case "joinnum" -> "join score=none"
           + " fromIndex=" + TpchConstants.LINEITEM_COLLECTION
           + " from=" + TpchConstants.L_ORDERKEY_NUM

@@ -52,7 +52,7 @@ import org.apache.solr.common.params.ModifiableSolrParams;
  * <p>Usage:
  *
  * <pre>
- *   search &lt;solrBaseUrl&gt; &lt;join|aijoin&gt; &lt;queryCount&gt; [concurrency] [warmupCount]
+ *   search &lt;solrBaseUrl&gt; &lt;join|aijoin&gt; &lt;queryCount&gt; [concurrency] [warmupCount] [minExactCount]
  *   search compare &lt;resultsA.csv&gt; &lt;resultsB.csv&gt;
  * </pre>
  *
@@ -70,11 +70,11 @@ public class Searcher {
   /** Builds the {@code {!...}} local-params fragment for a parser name. */
   static String localParams(String parser) {
     return switch (parser) {
-      case "join" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
-      case "jointop" -> "join score=none method=topLevelDV" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
-      case "aijoin" -> "aijoin"+ " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
-      case "joinnum" -> "join score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK_NUM + " to=" + Constants.PRODUCT_ID_NUM;
-      case "joinglob" -> "globalOrdinalsJoin score=none joinField=" + Constants.PRODUCT_ID_FK + " which= ";
+      case "join" -> "join cache=false score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+      case "jointop" -> "join cache=false score=none method=topLevelDV" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+      case "aijoin" -> "auxIndexJoin"+ " cache=false fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK + " to=" + Constants.PRODUCT_ID;
+      case "joinnum" -> "join cache=false score=none" + " fromIndex=" + Constants.SKUS_COLLECTION + " from=" + Constants.PRODUCT_ID_FK_NUM + " to=" + Constants.PRODUCT_ID_NUM;
+      case "joinglob" -> "globalOrdinalsJoin cache=false score=none joinField=" + Constants.PRODUCT_ID_FK + " which= ";
       default -> throw new IllegalArgumentException(
           "parser must be 'join|aijoin|joinnum|joinglob': " + parser);
     };
@@ -108,9 +108,10 @@ public class Searcher {
       System.exit(compare(Path.of(args[1]), Path.of(args[2])) ? 0 : 2);
     }
 
-    if (args.length < 3 || args.length > 5) {
+    if (args.length < 3 || args.length > 6) {
       System.err.println(
-          "Usage: search <solrBaseUrl> <join|aijoin|joinnum|joinglob|jointop> <queryCount> [concurrency] [warmupCount]");
+          "Usage: search <solrBaseUrl> <join|aijoin|joinnum|joinglob|jointop> <queryCount>"
+              + " [concurrency] [warmupCount] [minExactCount]");
       System.err.println("       search compare <resultsA.csv> <resultsB.csv>");
       System.exit(1);
     }
@@ -119,10 +120,12 @@ public class Searcher {
     int queryCount = Integer.parseInt(args[2]);
     int concurrency = args.length > 3 ? Integer.parseInt(args[3]) : 1;
     int warmupCount = args.length > 4 ? Integer.parseInt(args[4]) : 0;
+    long minExactCount = args.length > 5 ? Long.parseLong(args[5]) : Integer.MAX_VALUE;
 
     String localParams = localParams(parser);
-    if (queryCount < 1 || concurrency < 1 || warmupCount < 0) {
-      throw new IllegalArgumentException("queryCount and concurrency must be >= 1");
+    if (queryCount < 1 || concurrency < 1 || warmupCount < 0 || minExactCount < 0) {
+      throw new IllegalArgumentException(
+          "queryCount and concurrency must be >= 1; minExactCount must be >= 0");
     }
 
     List<QuerySpec> warmup = generateQueries(warmupCount, Constants.RANDOM_SEED + WARMUP_SEED_OFFSET);
@@ -133,14 +136,14 @@ public class Searcher {
         System.out.printf(
             "Warming up: %d queries, concurrency %d (results discarded)...%n",
             warmupCount, concurrency);
-        run(client, localParams, warmup, concurrency);
+        run(client, localParams, warmup, concurrency, minExactCount);
       }
 
       System.out.printf(
           "Running {!%s} against '%s': %d queries, concurrency %d...%n",
           localParams, solrUrl, queryCount, concurrency);
       long startNanos = System.nanoTime();
-      Result[] results = run(client, localParams, measured, concurrency);
+      Result[] results = run(client, localParams, measured, concurrency, minExactCount);
       double elapsedSec = (System.nanoTime() - startNanos) / 1e9;
 
       Path csv = Path.of(String.format("results-%s-c%d.csv", parser, concurrency));
@@ -152,10 +155,15 @@ public class Searcher {
   /**
    * Executes {@code specs} with {@code concurrency} workers pulling from a shared cursor, and
    * returns the results indexed by query ordinal. Workers write to disjoint array slots, and
-   * {@code awaitTermination} publishes those writes to this thread.
+   * {@code awaitTermination} publishes those writes to this thread. {@code numFound} is exact
+   * while it stays below {@code minExactCount} and approximate above it.
    */
   static Result[] run(
-      CloudJettySolrClient client, String localParams, List<QuerySpec> specs, int concurrency)
+      CloudJettySolrClient client,
+      String localParams,
+      List<QuerySpec> specs,
+      int concurrency,
+      long minExactCount)
       throws InterruptedException {
     Result[] results = new Result[specs.size()];
     AtomicInteger cursor = new AtomicInteger();
@@ -165,7 +173,7 @@ public class Searcher {
           () -> {
             int i;
             while ((i = cursor.getAndIncrement()) < specs.size()) {
-              results[i] = runOneQuery(client, localParams, i, specs.get(i));
+              results[i] = runOneQuery(client, localParams, i, specs.get(i), minExactCount);
             }
           });
     }
@@ -178,7 +186,11 @@ public class Searcher {
   }
 
   static Result runOneQuery(
-      CloudJettySolrClient client, String localParams, int index, QuerySpec spec) {
+      CloudJettySolrClient client,
+      String localParams,
+      int index,
+      QuerySpec spec,
+      long minExactCount) {
     // on the colo-index, which= must still select products only: brand is set on products alone
     String which = spec.brandFilter() != null ? spec.brandFilter() : Constants.BRAND + ":*";
     String q =
@@ -191,10 +203,10 @@ public class Searcher {
     params.set(CommonParams.Q, q);
     params.set(CommonParams.ROWS, 0);
     if (spec.brandFilter() != null) {
-      params.set(CommonParams.FQ, spec.brandFilter());
+      params.set(CommonParams.FQ, "{!cache=false}"+spec.brandFilter());
     }
-    // force an exact numFound: skip Solr's approximate early-termination count
-    params.set(CommonParams.MIN_EXACT_COUNT, Integer.MAX_VALUE);
+    // exact numFound while the count stays below minExactCount, approximate above it
+    params.set(CommonParams.MIN_EXACT_COUNT, String.valueOf(minExactCount));
 
     long t0 = System.nanoTime();
     try {
