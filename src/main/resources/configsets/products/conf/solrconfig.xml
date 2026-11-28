@@ -16,4 +16,6 @@
   <requestHandler name="/select" class="solr.SearchHandler"/>
 
   <!-- "to" side of the benchmark join: skus.PRODUCT_ID_FK -> products.ID -->
+  <queryParser name="auxIndexJoin" class="org.apache.solr.search.join.AuxIndexJoinQParserPlugin">
+  </queryParser>
 </config>

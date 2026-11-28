@@ -56,6 +56,8 @@ searcher having to query for it first.
 add into `bin\solr.in.sh`
 ```
 SOLR_HEAP="2g"
+
+GC_TUNE="-XX:G1HeapRegionSize=8m"
 ```
 
 ### Enabling segment-parallel search
