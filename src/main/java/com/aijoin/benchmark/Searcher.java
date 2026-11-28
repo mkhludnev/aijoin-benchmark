@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -55,6 +57,9 @@ import org.apache.solr.common.params.ModifiableSolrParams;
  *   search &lt;solrBaseUrl&gt; &lt;join|aijoin&gt; &lt;queryCount&gt; [concurrency] [warmupCount] [minExactCount]
  *   search compare &lt;resultsA.csv&gt; &lt;resultsB.csv&gt;
  * </pre>
+ *
+ * <p>Each run writes into its own folder, {@code reports/<yyMMdd-HHmm>-<parser>-<concurrency>/},
+ * holding the per-query CSV plus {@code args.txt}, the run's command-line arguments.
  *
  * <p>Every query filters skus by a few random Color <em>or</em> Size values (never both -- see
  * {@link #buildFromFilter}) joined back to products, further filtered by a few random brands on the
@@ -131,6 +136,18 @@ public class Searcher {
     List<QuerySpec> warmup = generateQueries(warmupCount, Constants.RANDOM_SEED + WARMUP_SEED_OFFSET);
     List<QuerySpec> measured = generateQueries(queryCount, Constants.RANDOM_SEED);
 
+    Path reportDir =
+        Path.of(
+            "reports",
+            String.format(
+                "%s-%s-%d",
+                LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyMMdd-HHmm")),
+                parser,
+                concurrency));
+    Files.createDirectories(reportDir);
+    Files.writeString(reportDir.resolve("args.txt"), String.join(" ", args) + System.lineSeparator());
+    System.out.println("Writing reports to " + reportDir);
+
     try (CloudJettySolrClient client = new CloudJettySolrClient.Builder(List.of(solrUrl)).build()) {
       if (warmupCount > 0) {
         System.out.printf(
@@ -146,7 +163,7 @@ public class Searcher {
       Result[] results = run(client, localParams, measured, concurrency, minExactCount);
       double elapsedSec = (System.nanoTime() - startNanos) / 1e9;
 
-      Path csv = Path.of(String.format("results-%s-c%d.csv", parser, concurrency));
+      Path csv = reportDir.resolve(String.format("search-results-%s-c%d.csv", parser, concurrency));
       writeCsv(csv, 1, results, false); // a plain search run is one round
       printSummary(parser, concurrency, results, elapsedSec, csv);
     }
@@ -201,7 +218,10 @@ public class Searcher {
 
     ModifiableSolrParams params = new ModifiableSolrParams();
     params.set(CommonParams.Q, q);
-    params.set(CommonParams.ROWS, 0);
+    // With rows=0 Solr counts with a plain TotalHitCountCollector that ignores minExactCount,
+    // so early termination is only possible on the top-N path: fetch one doc whenever a finite
+    // minExactCount is requested (one serialized doc is negligible in javabin).
+    params.set(CommonParams.ROWS, minExactCount < Integer.MAX_VALUE ? 1 : 0);
     if (spec.brandFilter() != null) {
       params.set(CommonParams.FQ, "{!cache=false}"+spec.brandFilter());
     }
@@ -344,7 +364,7 @@ public class Searcher {
     System.out.printf("per-query CSV : %s%n", csv);
     System.out.printf(
         "%nTo prove result-set equivalence against the other parser:%n"
-            + "  ./gradlew search -Pargs=\"compare %s results-<other>-c%d.csv\"%n",
+            + "  ./gradlew search -Pargs=\"compare %s reports/<run>/search-results-<other>-c%d.csv\"%n",
         csv, concurrency);
   }
 
